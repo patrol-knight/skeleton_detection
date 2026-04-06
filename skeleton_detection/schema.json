@@ -1,0 +1,105 @@
+ {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "Skeleton Detection Video Metadata",
+    "type": "object",
+    "required": ["video_path", "fps", "frame_size", "frames"],
+    "properties": {
+      "video_path": {
+        "type": "string"
+      },
+      "fps": {
+        "type": "number"
+      },
+      "frame_size": {
+        "type": "array",
+        "items": { "type": "integer" },
+        "minItems": 2,
+        "maxItems": 2
+      },
+      "frames": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "required": ["frame_index", "timestamp", "persons", "timings"],
+          "properties": {
+            "frame_index": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "timestamp": {
+              "type": "number",
+              "minimum": 0
+            },
+            "persons": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["person_id", "score", "bbox", "joints", "connections"],
+                "properties": {
+                  "person_id": {
+                    "type": "integer",
+                    "minimum": 0
+                  },
+                  "score": {
+                    "type": "number"
+                  },
+                  "bbox": {
+                    "anyOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "array",
+                        "items": { "type": "number" },
+                        "minItems": 4,
+                        "maxItems": 4
+                      }
+                    ]
+                  },
+                  "joints": {
+                    "type": "array",
+                    "minItems": 17,
+                    "maxItems": 17,
+                    "items": {
+                      "type": "array",
+                      "items": { "type": "number" },
+                      "minItems": 3,
+                      "maxItems": 3
+                    }
+                  },
+                  "connections": {
+                    "type": "array",
+                    "minItems": 19,
+                    "maxItems": 19,
+                    "items": {
+                      "type": "array",
+                      "items": { "type": "integer" },
+                      "minItems": 2,
+                      "maxItems": 2
+                    }
+                  }
+                }
+              }
+            },
+            "timings": {
+              "type": "object",
+              "required": [
+                "preprocessing",
+                "neural_network",
+                "decoder",
+                "postprocessing",
+                "total"
+              ],
+              "properties": {
+                "preprocessing": { "type": "number" },
+                "neural_network": { "type": "number" },
+                "decoder": { "type": "number" },
+                "postprocessing": { "type": "number" },
+                "total": { "type": "number" }
+              }
+            }
+          }
+        }
+      }
+    }
+  } 

@@ -1,0 +1,12 @@
+skeleton_detection_node:
+  ros__parameters:
+    input_topic: /dummy_camera/image_raw
+    checkpoint: shufflenetv2k16
+    iou_threshold: 0.3
+    max_missed_frames: 50
+    target_width: 800
+    target_height: 600
+    output_video_path: ../data/skeleton_detection_prediction.mp4
+    output_metadata_path: ../data/skeleton_detection_metadata.json
+    output_fps: 30.0
+    write_video: true
