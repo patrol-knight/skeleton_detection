@@ -31,8 +31,16 @@ def configure_openpifpaf_path() -> None:
     if env_root:
         candidate_roots.append(Path(env_root))
 
+    # Add the specific pifpaf_env path
+    candidate_roots.append(Path("/home/smores/anomaly_detection_ws/skeleton_detection_pifpaf/pifpaf_env"))
+
     module_path = Path(__file__).resolve()
     candidate_roots.extend(parent / "pifpaf_env" for parent in module_path.parents)
+
+    # Remove system torch path if present
+    system_torch_path = "/home/smores/software/pytorch"
+    if system_torch_path in sys.path:
+        sys.path.remove(system_torch_path)
 
     seen = set()
     for root in candidate_roots:
@@ -44,10 +52,9 @@ def configure_openpifpaf_path() -> None:
         if site_packages.is_dir():
             site_packages_str = str(site_packages)
             if site_packages_str not in sys.path:
-                # Append to preserve stdlib precedence and avoid shadowing by venv backports.
-                sys.path.append(site_packages_str)
-            return
-
+                # Prepend to override system packages
+                sys.path.insert(0, site_packages_str)
+                return
 
 def draw_tracking_overlays(frame_rgb: np.ndarray, metadata: Sequence[Dict]) -> np.ndarray:
     for person in metadata:

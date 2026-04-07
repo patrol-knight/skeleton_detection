@@ -26,7 +26,6 @@ def generate_launch_description() -> LaunchDescription:
         name="skeleton_detection_node",
         output="screen",
         parameters=[LaunchConfiguration("config")],
-        additional_env={"PYTHONNOUSERSITE": "1"},
     )
 
     return LaunchDescription([config_arg, node])
