@@ -1,1 +1,10 @@
 /data
+/skeleton_detection/__pycache__/
+/skeleton_detection/build/
+/skeleton_detection/install/
+/skeleton_detection/log/
+/skeleton_detection/launch/__pycache__/
+/skeleton_detection/skeleton_detection/__pycache__/
+/skeleton_detection/pifpaf_env
+/skeleton_detection/.vscode
+/skeleton_detection/.codex

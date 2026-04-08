@@ -117,16 +117,24 @@ class SkeletonDetectionNode(Node):
         output_metadata_path = str(self.get_parameter("output_metadata_path").value)
         output_fps = float(self.get_parameter("output_fps").value)
         write_video = bool(self.get_parameter("write_video").value)
-
         configure_openpifpaf_path()
 
         try:
+            import torch
             import openpifpaf
         except ImportError as exc:
             raise RuntimeError(
-                "openpifpaf is required to run skeleton_detection_node"
+                "openpifpaf and torch are required to run skeleton_detection_node"
             ) from exc
+        
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        if device.type == "cuda":
+            self.get_logger().info(f"Using GPU: {torch.cuda.get_device_name(0)}")
+        else:
+            self.get_logger().warning("CUDA not available, falling back to CPU")
 
+        openpifpaf.Predictor.device = device
         self.predictor = openpifpaf.Predictor(checkpoint=checkpoint)
         self.annotation_painter = openpifpaf.show.AnnotationPainter()
         self.image_canvas = openpifpaf.show.image_canvas

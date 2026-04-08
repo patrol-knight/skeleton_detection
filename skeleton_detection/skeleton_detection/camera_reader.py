@@ -1,71 +1,62 @@
-from pathlib import Path
-
-import cv2
 import rclpy
-from cv_bridge import CvBridge
 from rclpy.node import Node
 from sensor_msgs.msg import Image
+from cv_bridge import CvBridge
+import cv2
 
-
-class CameraReaderNode(Node):
+class CameraSubscriberNode(Node):
     def __init__(self) -> None:
-        super().__init__("camera_reader_node")
+        super().__init__("camera_subscriber_node")
 
-        default_video_path = Path(__file__).resolve().parents[2] / "data" / "test_video_1.mp4"
+        # 1. Declare the topic parameters
+        # Change default to your actual camera topic
+        self.declare_parameter("input_topic", "/camera/camera/color/image_raw")
+        self.declare_parameter("output_topic", "/dummy_camera/image_raw")
 
-        self.declare_parameter("input_topic", "/dummy_camera/image_raw")
-        self.declare_parameter("video_path", str(default_video_path))
-        self.declare_parameter("publish_fps", 30.0)
+        self.input_topic = self.get_parameter("input_topic").get_parameter_value().string_value
+        self.output_topic = self.get_parameter("output_topic").get_parameter_value().string_value
 
-        self.input_topic = str(self.get_parameter("input_topic").value)
-        self.video_path = str(self.get_parameter("video_path").value)
-        self.publish_fps = float(self.get_parameter("publish_fps").value)
-
-        self.publisher = self.create_publisher(Image, self.input_topic, 10)
         self.bridge = CvBridge()
-        self.capture = cv2.VideoCapture(self.video_path)
-        self.frame_index = 0
 
-        if not self.capture.isOpened():
-            raise RuntimeError(f"Failed to open video file: {self.video_path}")
-
-        timer_period = 1.0 / max(self.publish_fps, 0.1)
-        self.timer = self.create_timer(timer_period, self._publish_frame)
-
-        self.get_logger().info(
-            f"Publishing {self.video_path} to {self.input_topic} at {self.publish_fps:.2f} FPS"
+        # 2. Create a Subscriber instead of a VideoCapture
+        self.subscription = self.create_subscription(
+            Image,
+            self.input_topic,
+            self._image_callback,
+            10  # QoS profile depth
         )
 
-    def _publish_frame(self) -> None:
-        if self.frame_index > 300:
-            print("Stopping after 10 frames for testing purposes.")
-            self.timer.cancel()
-            return
+        # 3. (Optional) Create a Publisher if you want to relay the frames
+        self.publisher = self.create_publisher(Image, self.output_topic, 10)
 
-        ok, frame_bgr = self.capture.read()
+        self.get_logger().info(f"Subscribed to: {self.input_topic}")
+        self.get_logger().info(f"Relaying to: {self.output_topic}")
 
-        if not ok:
-            self.get_logger().info("Reached end of video. Stopping camera_reader_node.")
-            self.timer.cancel()
-            return
+    def _image_callback(self, msg: Image) -> None:
+        try:
+            # Convert ROS Image message to OpenCV BGR format
+            frame_bgr = self.bridge.imgmsg_to_cv2(msg, desired_encoding="bgr8")
 
-        msg = self.bridge.cv2_to_imgmsg(frame_bgr, encoding="bgr8")
-        msg.header.stamp = self.get_clock().now().to_msg()
-        self.publisher.publish(msg)
+            # --- INSERT ANY PROCESSING HERE (Optional) ---
+            # e.g., frame_bgr = cv2.flip(frame_bgr, 1) 
 
-        self.frame_index += 1
+            # Convert back to ROS message and publish
+            output_msg = self.bridge.cv2_to_imgmsg(frame_bgr, encoding="bgr8")
+            output_msg.header = msg.header # Preserve original timestamp and frame_id
+            
+            self.get_logger().info("Received and processed a frame, publishing...")
+            self.publisher.publish(output_msg)
 
-    def destroy_node(self):
-        if hasattr(self, "capture") and self.capture is not None:
-            self.capture.release()
-        return super().destroy_node()
-
+        except Exception as e:
+            self.get_logger().error(f"Failed to process incoming image: {e}")
 
 def main(args=None) -> None:
     rclpy.init(args=args)
-    node = CameraReaderNode()
+    node = CameraSubscriberNode()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         node.destroy_node()
         rclpy.shutdown()
