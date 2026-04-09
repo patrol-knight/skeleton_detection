@@ -9,8 +9,10 @@ import numpy as np
 from PIL import Image as PILImage
 import rclpy
 from cv_bridge import CvBridge
+from geometry_msgs.msg import Point
 from rclpy.node import Node
 from sensor_msgs.msg import Image
+from skeleton_detection.msg import PersonSkeleton, SkeletonFrame
 
 from .iou_tracking import IOUTracker, extract_bbox
 from .postprocessing import FrameArtifactsWriter
@@ -96,12 +98,16 @@ class SkeletonDetectionNode(Node):
         self.declare_parameter("max_missed_frames", 50)
         self.declare_parameter("target_width", 800)
         self.declare_parameter("target_height", 600)
+        self.declare_parameter("output_topic", "/skeleton_detection/frame")
+        self.declare_parameter("skeleton_output_topic", "/skeleton_output")
         self.declare_parameter("output_video_path", "/data/skeleton_detection_prediction.mp4")
         self.declare_parameter("output_metadata_path", "/data/skeleton_detection_metadata.json")
         self.declare_parameter("output_fps", 30.0)
         self.declare_parameter("write_video", True)
 
         self.input_topic = str(self.get_parameter("input_topic").value)
+        self.output_topic = str(self.get_parameter("output_topic").value)
+        self.skeleton_output_topic = str(self.get_parameter("skeleton_output_topic").value)
         self.target_size: Tuple[int, int] = (
             int(self.get_parameter("target_width").value),
             int(self.get_parameter("target_height").value),
@@ -156,11 +162,58 @@ class SkeletonDetectionNode(Node):
             self._on_image,
             10,
         )
+        self.frame_publisher = self.create_publisher(SkeletonFrame, self.output_topic, 10)
+        self.annotated_image_publisher = self.create_publisher(
+            Image,
+            self.skeleton_output_topic,
+            10,
+        )
 
         self.get_logger().info(
             f"Listening on {self.input_topic}, target_size={self.target_size}, "
-            f"metadata={output_metadata_path}, video={output_video_path}"
+            f"metadata={output_metadata_path}, video={output_video_path}, "
+            f"topic={self.output_topic}, skeleton_output={self.skeleton_output_topic}"
         )
+
+    def _publish_frame_message(
+        self,
+        source_msg: Image,
+        timestamp_sec: float,
+        metadata: Sequence[Dict],
+    ) -> None:
+        frame_msg = SkeletonFrame()
+        frame_msg.header = source_msg.header
+        frame_msg.frame_index = self.frame_index
+        frame_msg.timestamp = timestamp_sec
+
+        for person in metadata:
+            person_msg = PersonSkeleton()
+            person_msg.person_id = int(person["person_id"])
+            person_msg.score = float(person["score"])
+            person_msg.bbox = (
+                [0.0, 0.0, 0.0, 0.0]
+                if person["bbox"] is None
+                else [float(value) for value in person["bbox"]]
+            )
+            person_msg.joints = [
+                float(value)
+                for joint in person["joints"]
+                for value in joint
+            ]
+            person_msg.connections = [
+                int(value)
+                for pair in person["connections"]
+                for value in pair
+            ]
+            person_msg.position = Point(x=0.0, y=0.0, z=0.0)
+            frame_msg.persons.append(person_msg)
+
+        self.frame_publisher.publish(frame_msg)
+
+    def _publish_annotated_image(self, source_msg: Image, annotated_frame_bgr: np.ndarray) -> None:
+        annotated_msg = self.bridge.cv2_to_imgmsg(annotated_frame_bgr, encoding="bgr8")
+        annotated_msg.header = source_msg.header
+        self.annotated_image_publisher.publish(annotated_msg)
 
     def _process_frame(self, frame_rgb: np.ndarray):
         start_total = time.time()
@@ -224,6 +277,7 @@ class SkeletonDetectionNode(Node):
             frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
             annotated_frame_rgb, metadata, timings = self._process_frame(frame_rgb)
             annotated_frame_bgr = cv2.cvtColor(annotated_frame_rgb, cv2.COLOR_RGB2BGR)
+            self._publish_annotated_image(msg, annotated_frame_bgr)
 
             stamp = msg.header.stamp.sec + (msg.header.stamp.nanosec / 1e9)
             self.artifact_writer.append(
@@ -233,6 +287,7 @@ class SkeletonDetectionNode(Node):
                 persons=metadata,
                 timings=timings,
             )
+            self._publish_frame_message(msg, stamp, metadata)
 
             self.get_logger().info(
                 f"Processed frame {self.frame_index} with {len(metadata)} detections in {timings['total']:.3f} seconds"

@@ -6,7 +6,9 @@ skeleton_detection_node:
     max_missed_frames: 50
     target_width: 800
     target_height: 600
-    output_video_path: ../../data/skeleton_detection_prediction.mp4
-    output_metadata_path: ../../data/skeleton_detection_metadata.json
-    output_fps: 10.0
+    output_topic: /skeleton_detection/frame
+    skeleton_output_topic: /skeleton_output
+    output_video_path: /home/smores/anomaly_detection_ws/data/skeleton_detection_prediction.mp4
+    output_metadata_path: /home/smores/anomaly_detection_ws/data/skeleton_detection_metadata.json
+    output_fps: 5.0
     write_video: true
