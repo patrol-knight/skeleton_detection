@@ -1,70 +1,132 @@
 # skeleton_detection
 
-ROS 2 Python package for:
+ROS 2 package for running OpenPifPaf-based skeleton detection on an image stream and producing:
 
-- reading a test MP4 and publishing frames as `sensor_msgs/Image`
-- running OpenPifPaf-based skeleton detection on that image stream
-- writing annotated video and metadata output
+- raw per-frame skeleton metadata on `/skeleton_detection/frame`
+- annotated image frames on `/skeleton_output`
+- an annotated MP4 on disk
+- a JSON metadata log on disk
 
-## Nodes
+The package supports two common workflows:
 
-### `camera_reader_node`
+1. publish frames from a local MP4 and run skeleton detection on that stream
+2. subscribe to a live RealSense color topic and run skeleton detection in real time
 
-Reads an MP4 with OpenCV and publishes frames to an image topic.
+## Outputs
 
-Default parameters are in [config/camera_reader.yaml](/home/samdong/patrolknight/anomaly_detection/skeleton_detection/config/camera_reader.yaml):
+By default, the detector uses the parameters in [config/skeleton_detection.yaml]:
 
-- `input_topic`: `/dummy_camera/image_raw`
-- `video_path`: `/home/samdong/patrolknight/anomaly_detection/data/test_video_1.mp4`
-- `publish_fps`: `30.0`
-- `loop_video`: `true`
-
-### `skeleton_detection_node`
-
-Subscribes to an image topic, runs pose detection and simple IOU-based tracking, and writes output artifacts.
-
-Default parameters are in [config/skeleton_detection.yaml](/home/samdong/patrolknight/anomaly_detection/skeleton_detection/config/skeleton_detection.yaml):
-
-- `input_topic`: `/dummy_camera/image_raw`
-- `checkpoint`: `shufflenetv2k16`
-- `target_width`: `800`
-- `target_height`: `600`
-- `output_video_path`: `../data/skeleton_detection_prediction.mp4`
-- `output_metadata_path`: `../data/skeleton_detection_metadata.json`
+- `/skeleton_detection/frame` publishes one `skeleton_detection/msg/SkeletonFrame` message per input frame.
+- `/skeleton_output` publishes a `sensor_msgs/Image` containing the annotated frame with skeletons, bounding boxes, and tracking IDs drawn on top.
+- `output_fps` controls the saved MP4 playback rate and the top-level metadata fps value. It does not throttle the detector callback.
 
 ## Build
 
+From the workspace root:
+
 ```bash
-cd /home/samdong/patrolknight/anomaly_detection/skeleton_detection
 source /opt/ros/humble/setup.bash
 colcon build --packages-select skeleton_detection
 source install/setup.bash
 ```
 
-## Test Workflow
+## Common Detector Launch
 
-Terminal 1:
-
-```bash
-cd /home/samdong/patrolknight/anomaly_detection/skeleton_detection
-source /opt/ros/humble/setup.bash
-source install/setup.bash
-ros2 launch skeleton_detection camera_reader.launch.py
-```
-
-Terminal 2:
+The detector itself is launched the same way in both workflows:
 
 ```bash
-cd /home/samdong/patrolknight/anomaly_detection/skeleton_detection
+source src/skeleton_detection_pifpaf/pifpaf_env/bin/activate
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 ros2 launch skeleton_detection skeleton_detection.launch.py
 ```
 
-This publishes frames from the test video to `/dummy_camera/image_raw`, then runs skeleton detection on that topic.
+The two environment variables above keep the detector headless and avoid Qt plugin crashes while it renders annotated frames internally.
 
-## Notes
+## Option 1: Local MP4 Through `camera_reader_node`
 
-- `skeleton_detection_node` sets `PYTHONNOUSERSITE=1` in its launch file to avoid mixing ROS/system Python packages with user-site packages.
-- `openpifpaf` must be available from the project `pifpaf_env`.
-- If you want to use a different test video, change `video_path` in [config/camera_reader.yaml](/home/samdong/patrolknight/anomaly_detection/skeleton_detection/config/camera_reader.yaml).
+Use this when you want to run skeleton detection on a static video file on disk.
+
+1. Open [config/camera_reader.yaml]and set the MP4 path you want to read.
+2. Make sure the detector `input_topic` in [config/skeleton_detection.yaml]matches the image topic published by the camera reader. A common choice for offline playback is `/dummy_camera/image_raw`.
+3. Launch the detector in a one terminal.
+4. Launch the MP4 reader in another terminal.
+
+Terminal 1, detector:
+
+```bash
+source src/skeleton_detection_pifpaf/pifpaf_env/bin/activate
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch skeleton_detection skeleton_detection.launch.py
+```
+
+Terminal 2, MP4 reader:
+
+```bash
+source src/skeleton_detection_pifpaf/pifpaf_env/bin/activate
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+ros2 launch skeleton_detection camera_reader.launch.py
+```
+
+## Option 2: Live RealSense Camera Input
+
+Use this when a RealSense driver is already publishing a live color stream to `/camera/camera/color/image_raw`.
+
+1. Start your RealSense ROS driver so the live color topic is available.
+2. Keep `input_topic: /camera/camera/color/image_raw` in [config/skeleton_detection.yaml]
+3. Launch the detector.
+
+Example detector terminal:
+
+```bash
+source src/skeleton_detection_pifpaf/pifpaf_env/bin/activate
+source /opt/ros/humble/setup.bash
+source install/setup.bash
+export QT_QPA_PLATFORM=offscreen
+export MPLBACKEND=Agg
+ros2 launch skeleton_detection skeleton_detection.launch.py
+```
+
+If you use Ubuntu 22.04:
+
+```bash
+ros2 run realsense2_camera realsense2_camera_node
+```
+
+If you use Intel's standard ROS RealSense driver, a common launch looks like:
+
+```bash
+source /opt/ros/humble/setup.bash
+ros2 launch realsense2_camera rs_launch.py
+```
+
+
+If your camera publishes a different topic name, update `input_topic` in [config/skeleton_detection.yaml]to match it.
+
+## View Raw And Processed Images In One `rqt` Window
+
+The most reliable setup is:
+
+- run the detector in the shell you use for OpenPifPaf
+- run `rqt` in a separate clean ROS shell
+
+Terminal 3, `rqt` viewer shell:
+
+```bash
+source src/skeleton_detection_pifpaf/pifpaf_env/bin/activate 
+src/skeleton_detection_pifpaf/pifpaf_env/bin/python3 /opt/ros/humble/bin/rqt
+
+```
+
+Inside `rqt`:
+
+1. Open `Plugins > Visualization > Image View`.
+2. Open `Plugins > Visualization > Image View` a second time.
+3. Dock the two image panes side by side in the same `rqt` window.
+4. Set the left pane topic to `/camera/camera/color/image_raw`.
+5. Set the right pane topic to `/skeleton_output`.
+6. Save the perspective if you want to reopen the same layout later.
+
+This gives you a single `rqt` window with the raw input image on the left and the processed skeleton output on the right.
