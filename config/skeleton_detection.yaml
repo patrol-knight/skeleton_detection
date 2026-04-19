@@ -2,7 +2,7 @@ skeleton_detection_node:
   ros__parameters:
     input_topic: /camera/camera/color/image_raw
     checkpoint: shufflenetv2k16
-    iou_threshold: 0.3
+    iou_threshold: 0.5
     max_missed_frames: 50
     target_width: 800
     target_height: 600

@@ -130,3 +130,23 @@ Inside `rqt`:
 6. Save the perspective if you want to reopen the same layout later.
 
 This gives you a single `rqt` window with the raw input image on the left and the processed skeleton output on the right.
+
+
+# Trouble Shoot
+
+```bash
+which python3
+```
+If the command returns
+```bash
+/home/smores/anaconda3/bin/python3
+```
+
+run 
+```bash
+export VIRTUAL_ENV=/home/smores/anomaly_detection_ws/src/skeleton_detection_pifpaf/pifpaf_env
+export PATH="$VIRTUAL_ENV/bin:$PATH"
+hash -r
+which python3
+```
+

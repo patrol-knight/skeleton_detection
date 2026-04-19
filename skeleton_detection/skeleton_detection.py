@@ -88,6 +88,35 @@ def draw_tracking_overlays(frame_rgb: np.ndarray, metadata: Sequence[Dict]) -> n
     return frame_rgb
 
 
+def draw_frame_index_overlay(frame_rgb: np.ndarray, frame_index: int) -> np.ndarray:
+    label = f"Frame {frame_index}"
+    origin = (12, 28)
+
+    # Draw an outline first so the frame label stays readable on any scene.
+    cv2.putText(
+        frame_rgb,
+        label,
+        origin,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (0, 0, 0),
+        4,
+        cv2.LINE_AA,
+    )
+    cv2.putText(
+        frame_rgb,
+        label,
+        origin,
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.8,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+
+    return frame_rgb
+
+
 class SkeletonDetectionNode(Node):
     def __init__(self) -> None:
         super().__init__("skeleton_detection_node")
@@ -258,6 +287,7 @@ class SkeletonDetectionNode(Node):
             annotated_frame = cv2.resize(annotated_frame, self.target_size, interpolation=cv2.INTER_LINEAR)
 
         annotated_frame = draw_tracking_overlays(annotated_frame, metadata)
+        annotated_frame = draw_frame_index_overlay(annotated_frame, self.frame_index)
         t_post = time.time() - t2
 
         total_time = time.time() - start_total
