@@ -8,3 +8,6 @@
 /skeleton_detection/pifpaf_env
 /skeleton_detection/.vscode
 /skeleton_detection/.codex
+/build
+/install
+/log
