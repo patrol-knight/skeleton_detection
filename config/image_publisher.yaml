@@ -1,0 +1,10 @@
+image_publisher_node:
+  ros__parameters:
+    image_paths: []
+    image_dir: ""
+    image_path: /ros2_ws/src/skeleton_detection/data/images/000000000785.jpg
+    output_topic: /dummy_camera/image_raw
+    frame_id: camera_color_optical_frame
+    publish_interval_sec: 1.0
+    wait_for_subscriber_sec: 10.0
+    shutdown_after_publish: true

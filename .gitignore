@@ -11,3 +11,6 @@
 /build
 /install
 /log
+
+# Generated RTMO debug visualisations (annotated JPG/PNG files)
+/output/
