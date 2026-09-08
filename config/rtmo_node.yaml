@@ -1,5 +1,7 @@
 rtmo_node:
   ros__parameters:
+    # Milestone 1 regression path: frames arrive on a ROS Image topic.
+    input_mode: ros_topic
     input_topic: /dummy_camera/image_raw
     output_topic: /skeleton_detection/frame
     debug_image_topic: /skeleton_detection/debug_image
@@ -8,7 +10,10 @@ rtmo_node:
     device: cuda:0
     # Detections below this person score are not published at all.
     person_score_threshold: 0.3
+    # Node default is false (live mode); the offline workflow wants it on.
     publish_debug_image: true
+    # One log line per frame is useful when publishing a handful of images.
+    log_every_frame: true
 
     # --- offline visualisation (Milestone 1.5) ---
     joint_score_threshold: 0.3

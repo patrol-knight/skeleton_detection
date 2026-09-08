@@ -1,0 +1,39 @@
+# Milestone 2: RealSense D456 captured directly inside the RTMO process.
+# No realsense2_camera node, no sensor_msgs/Image on the input path.
+rtmo_node:
+  ros__parameters:
+    input_mode: realsense
+
+    # --- camera (validated against the device's advertised profiles at
+    # startup; an unsupported combination fails with the supported list
+    # instead of being silently substituted) ---
+    realsense_width: 848
+    realsense_height: 480
+    realsense_fps: 60
+    # D456 advertises bgr8 natively at this profile, which is exactly what the
+    # RTMO config expects, so no per-frame colour conversion is done.
+    realsense_color_format: bgr8
+    realsense_serial: ""          # empty = first device found
+    camera_frame_id: camera_color_optical_frame
+
+    # --- output ---
+    output_topic: /skeleton_detection/frame
+    debug_image_topic: /skeleton_detection/debug_image
+
+    # --- model ---
+    model_config: /usr/local/lib/python3.10/dist-packages/mmpose/.mim/configs/body_2d_keypoint/rtmo/body7/rtmo-m_16xb16-600e_body7-640x640.py
+    checkpoint: /ros2_ws/src/skeleton_detection/data/checkpoints/rtmo-m_16xb16-600e_body7-640x640-39e78cc4_20231211.pth
+    device: cuda:0
+    person_score_threshold: 0.3
+
+    # --- visualisation OFF for the live/performance path ---
+    # Drawing + JPEG encoding + DDS transport all cost throughput.
+    publish_debug_image: false
+    save_debug_images: false
+    draw_joint_scores: false
+    joint_score_threshold: 0.3
+
+    # --- logging ---
+    stats_log_period_sec: 1.0     # periodic summary instead of per-frame logs
+    log_every_frame: false
+    run_duration_sec: 0.0         # >0 = stop automatically (benchmark runs)

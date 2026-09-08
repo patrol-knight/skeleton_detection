@@ -29,6 +29,7 @@ Container: `ros:humble-ros-base` (Ubuntu 22.04 jammy), Python 3.10.12.
 | terminaltables | 3.1.10 | PyPI | mmdet dependency |
 | json-tricks | 3.17.3 | PyPI | mmpose dependency |
 | munkres | 1.1.4 | PyPI | mmpose dependency |
+| pyrealsense2 | 2.58.3.10794 | PyPI | RealSense Python bindings; version matched to the `ros-humble-librealsense2` 2.58.3 runtime (see below) |
 
 ## CUDA apt packages (optional for inference)
 
@@ -77,6 +78,30 @@ CUDA runtime via the `nvidia-*` pip packages. They are installed so that
 
 5. Full `mmcv` 2.x does **not** build from source against torch 2.14 (C++ API
    drift). Not retried; the stub above avoids needing it for RTMO.
+
+## RealSense (Milestone 2)
+
+Direct, in-process capture from the D456 needs the **Python** bindings; the
+base image already carries the C++ runtime.
+
+- C++ runtime: `ros-humble-librealsense2` **2.58.3** (apt, pulled in as a
+  dependency of `ros-humble-realsense2-camera` in the base layer). Provides
+  `/opt/ros/humble/lib/aarch64-linux-gnu/librealsense2.so.2.58.3`.
+- Python bindings: `pyrealsense2==2.58.3.10794` from PyPI. A
+  `manylinux2014_aarch64` cp310 wheel exists, so **nothing is built from
+  source** and no Intel apt repo is needed. The version is pinned to match the
+  apt runtime above; the wheel is self-contained (it bundles its own
+  librealsense) so the two never have to interoperate, but keeping them on the
+  same version avoids surprises if both are ever loaded.
+- Device access: the container is started with `-v /dev:/dev` and runs as root,
+  which is sufficient for libusb to claim the camera. No udev rules are
+  installed inside the container.
+
+Verified device (2026-09-07): **RealSense D456**, serial `308222301472`,
+firmware `5.17.0.10`, USB 3.2. Colour profile **848x480 @ 60 fps `bgr8`** is
+natively advertised, so the frame handed to MMPose needs no colour conversion
+(the RTMO config uses `mean=[0,0,0]`, `std=[1,1,1]`, no `bgr_to_rgb`).
+Measured raw capture rate: **59.8 FPS**.
 
 ## Model
 
