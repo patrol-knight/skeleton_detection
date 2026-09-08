@@ -20,10 +20,27 @@ rtmo_node:
     output_topic: /skeleton_detection/frame
 
     # --- model ---
-    model_config: /usr/local/lib/python3.10/dist-packages/mmpose/.mim/configs/body_2d_keypoint/rtmo/body7/rtmo-m_16xb16-600e_body7-640x640.py
-    checkpoint: /ros2_ws/src/skeleton_detection/data/checkpoints/rtmo-m_16xb16-600e_body7-640x640-39e78cc4_20231211.pth
+    # Baked into the Docker image by docker/fetch_models.py; override
+    # these if you want to run a different config/checkpoint.
+    model_config: /opt/models/rtmo/rtmo-m.py
+    checkpoint: /opt/models/rtmo/rtmo-m.pth
     device: cuda:0
     person_score_threshold: 0.3
+
+    # --- tracking: BoT-SORT + OSNet ReID, in this same process ---
+    # OFF by default: it costs throughput and changes person_id semantics.
+    # When enabled, PersonSkeleton.person_id becomes a PERSISTENT track id
+    # instead of the frame-local detection index.
+    enable_tracking: false
+    with_reid: true
+    reid_checkpoint: /opt/models/reid/osnet_x0_25_msmt17.pt
+    # <=0 uses the measured pipeline rate (~55 Hz), NOT the 60 Hz camera rate:
+    # the capture buffer is latest-frame-wins, so the tracker only sees the
+    # frames RTMO actually processed. This scales BoT-SORT's track buffer.
+    tracking_frame_rate: 0.0
+    # 'none' disables camera-motion compensation (right for a static camera).
+    # Other options: ecc, orb, sift, sof.
+    cmc_method: "none"
 
     # --- visualisation: human-facing only, OFF by default for performance ---
     # Enable with: -p publish_visualization_image:=true

@@ -4,11 +4,16 @@ rtmo_node:
     input_mode: ros_topic
     input_topic: /dummy_camera/image_raw
     output_topic: /skeleton_detection/frame
-    model_config: /usr/local/lib/python3.10/dist-packages/mmpose/.mim/configs/body_2d_keypoint/rtmo/body7/rtmo-m_16xb16-600e_body7-640x640.py
-    checkpoint: /ros2_ws/src/skeleton_detection/data/checkpoints/rtmo-m_16xb16-600e_body7-640x640-39e78cc4_20231211.pth
+    # Baked into the Docker image by docker/fetch_models.py; override
+    # these if you want to run a different config/checkpoint.
+    model_config: /opt/models/rtmo/rtmo-m.py
+    checkpoint: /opt/models/rtmo/rtmo-m.pth
     device: cuda:0
     # Detections below this person score are not published at all.
     person_score_threshold: 0.3
+    # Offline single-image regression path: tracking off, so person_id stays
+    # the frame-local detection index.
+    enable_tracking: false
     # Node default is false (live mode); the offline workflow wants it on.
     # Full source resolution here, and no rate limit: this path publishes a
     # handful of images, not a live stream.

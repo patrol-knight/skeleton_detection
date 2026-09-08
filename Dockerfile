@@ -120,14 +120,22 @@ RUN python3 -m pip install --no-cache-dir \
 COPY docker/mmcv_ext_stub.py \
     /usr/local/lib/python3.10/dist-packages/mmcv/_ext.py
 
-# Catch dependency/import regressions during docker build
-RUN python3 -c "\
-import torch, torchvision, mmengine, mmcv, mmdet, mmpose, xtcocotools, chumpy, numpy, cv2; \
-import pyrealsense2 as rs; print('pyrealsense2', rs.__version__); \
-import numpy; assert numpy.__version__.startswith('1.23'), 'numpy was displaced: ' + numpy.__version__; \
-from boxmot.trackers.botsort.botsort import BotSort; from boxmot.reid import ReID; print('boxmot BoT-SORT + ReID import OK'); \
-from mmpose.apis import init_model, inference_bottomup; \
-from mmpose.models.heads.hybrid_heads.rtmo_head import RTMOHead; \
-print('RTMO import chain OK')"
+# Bake the runtime model assets into the image at /opt/models so a pulled
+# image is self-contained. Previously these lived in the source tree's
+# data/checkpoints/, which is both .gitignore'd and .dockerignore'd, so
+# `git clone` + `docker pull` produced an environment with no weights.
+# Every file is sha256-verified; a bad download fails the build.
+COPY docker/fetch_models.py /tmp/fetch_models.py
+RUN python3 /tmp/fetch_models.py && rm -f /tmp/fetch_models.py
+
+ENV RTMO_MODEL_CONFIG=/opt/models/rtmo/rtmo-m.py \
+    RTMO_CHECKPOINT=/opt/models/rtmo/rtmo-m.pth \
+    REID_CHECKPOINT=/opt/models/reid/osnet_x0_25_msmt17.pt
+
+# Catch dependency/import regressions and missing assets during docker build.
+# These assertions exist so a future dependency resolution that displaces the
+# working RTMO stack fails LOUDLY here instead of breaking at runtime.
+COPY docker/verify_image.py /tmp/verify_image.py
+RUN python3 /tmp/verify_image.py && rm -f /tmp/verify_image.py
 
 WORKDIR /ros2_ws

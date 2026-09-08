@@ -11,10 +11,15 @@ The functions here take duck-typed "person" objects: anything exposing
 ``joints`` (51 floats, [x, y, conf] * 17) works.  ``PersonSkeleton`` messages
 satisfy that, so no ROS message import is needed here.
 
+``person_id`` is drawn as-is.  When tracking is enabled it is a persistent
+BoT-SORT track id; when tracking is off it is the frame-local detection index.
+The caller selects the matching footer text with :func:`legend_for`.
+
 All coordinates are in the ORIGINAL source image coordinate system; the canvas
 is the untouched source image, so nothing has to be rescaled.
 """
 
+import os
 from typing import List, Optional, Sequence, Tuple
 
 import cv2
@@ -37,9 +42,20 @@ COLOR_TEXT_PLATE = (0, 0, 0)
 
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 
-# Reminder rendered onto every saved/published overlay so a reviewer looking at
-# the file alone cannot mistake the label for a tracking id.
-DEFAULT_LEGEND = "ID = per-frame detection index (NOT a tracking ID)"
+# Rendered onto every saved/published overlay so a reviewer looking at the file
+# alone knows what the ID actually means. Use :func:`legend_for` to pick the
+# right one -- the meaning of person_id depends on whether tracking is enabled.
+UNTRACKED_LEGEND = "ID = per-frame detection index (NOT stable across frames)"
+TRACKED_LEGEND = "ID = persistent BoT-SORT track ID"
+TRACKED_REID_LEGEND = "ID = persistent BoT-SORT track ID (motion + ReID)"
+DEFAULT_LEGEND = UNTRACKED_LEGEND
+
+
+def legend_for(tracking_enabled: bool, with_reid: bool = False) -> str:
+    """Legend text matching the id semantics actually in force."""
+    if not tracking_enabled:
+        return UNTRACKED_LEGEND
+    return TRACKED_REID_LEGEND if with_reid else TRACKED_LEGEND
 
 
 def _side_color(keypoint_index: int) -> Tuple[int, int, int]:
@@ -218,3 +234,109 @@ def joint_visibility_summary(
         confidences = list(person.joints)[2::3]
         counts.append(sum(1 for value in confidences if value >= joint_score_threshold))
     return counts
+
+
+class VisualizationWriter:
+    """Writes rendered overlays to disk as image files.
+
+    Kept next to the drawing code because it is a visualization *sink*, not
+    node logic. The live ROS topic is the other sink; both consume the overlay
+    produced by :func:`draw_skeleton_overlay`, which stays the single drawing
+    implementation.
+
+    Naming convention: ``frame_<frame_index padded to 6>_rtmo.<ext>``, e.g.
+    ``frame_000000_rtmo.jpg``. ``frame_index`` resets when the node restarts,
+    so files never collide within a run, but a NEW run overwrites the previous
+    run's files -- logged as a warning rather than done silently.
+    """
+
+    def __init__(self, output_dir: str, image_format: str = "jpg", logger=None) -> None:
+        self.output_dir = output_dir
+        self.image_format = str(image_format).lstrip(".").lower()
+        if self.image_format not in ("jpg", "jpeg", "png"):
+            raise ValueError(
+                "visualization_image_format must be one of 'jpg', 'jpeg', 'png'; "
+                f"got '{self.image_format}'"
+            )
+        self._logger = logger
+        self._prepare_output_dir()
+
+    def _log(self, level: str, message: str) -> None:
+        if self._logger is None:
+            print(f"[{level}] {message}", flush=True)
+            return
+        try:
+            getattr(self._logger, level)(message)
+        except Exception:  # noqa: BLE001
+            print(f"[{level}] {message}", flush=True)
+
+    def _prepare_output_dir(self) -> None:
+        """Create the output directory tree, widening permissions we create.
+
+        The default lives inside the bind-mounted source tree, so files written
+        here appear directly on the host and can be opened from the VS Code SSH
+        file explorer -- no rqt, X11 or display forwarding involved.
+        """
+        created = []
+        candidate = os.path.abspath(self.output_dir)
+        while candidate and not os.path.isdir(candidate):
+            created.append(candidate)
+            parent = os.path.dirname(candidate)
+            if parent == candidate:
+                break
+            candidate = parent
+
+        try:
+            os.makedirs(self.output_dir, exist_ok=True)
+        except OSError as exc:
+            raise RuntimeError(
+                f"Cannot create visualization_output_dir '{self.output_dir}': {exc}"
+            ) from exc
+
+        for directory in created:
+            self._relax_permissions(directory, 0o777)
+
+        if not os.access(self.output_dir, os.W_OK):
+            raise RuntimeError(
+                f"visualization_output_dir '{self.output_dir}' is not writable"
+            )
+
+    def write(self, overlay_bgr: np.ndarray, frame_index: int) -> Optional[str]:
+        """Write one annotated frame; returns the path, or None on failure."""
+        filename = f"frame_{frame_index:06d}_rtmo.{self.image_format}"
+        path = os.path.join(self.output_dir, filename)
+
+        if os.path.exists(path):
+            self._log(
+                "warning",
+                f"Overwriting existing {path} (left over from an earlier run)",
+            )
+
+        try:
+            written = cv2.imwrite(path, overlay_bgr)
+        except cv2.error as exc:
+            self._log("error", f"Failed to write {path}: {exc}")
+            return None
+
+        if not written:
+            self._log("error", f"cv2.imwrite returned False for {path}")
+            return None
+
+        self._relax_permissions(path, 0o666)
+        return path
+
+    @staticmethod
+    def _relax_permissions(path: str, mode: int) -> None:
+        """Make container-written files manageable from the host.
+
+        The container runs as root, so anything it writes into the bind mount
+        is root-owned on the host. Widening the mode keeps the offline workflow
+        friction-free. Best effort: skipped when not root or when the
+        filesystem refuses chmod.
+        """
+        if os.geteuid() != 0:
+            return
+        try:
+            os.chmod(path, mode)
+        except OSError:
+            pass

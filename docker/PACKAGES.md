@@ -104,61 +104,123 @@ natively advertised, so the frame handed to MMPose needs no colour conversion
 (the RTMO config uses `mean=[0,0,0]`, `std=[1,1,1]`, no `bgr_to_rgb`).
 Measured raw capture rate: **59.8 FPS**.
 
-## Tracking / ReID (BoxMOT audit)
+## Tracking / ReID (BoxMOT — installed, NOT yet integrated)
 
 `boxmot` provides BoT-SORT with built-in ReID and accepts detections from an
 external detector, which is what we need for RTMO. It is a pure-Python wheel
 (`py3-none-any`), so aarch64 is not an issue for boxmot itself.
 
-**Version choice is load-bearing.** BoxMOT's numpy floor moved over time:
+**Tracking is not wired into the ROS node yet.** `rtmo_node.py` does not import
+boxmot, `person_id` is still a frame-local detection index, and no ReID runs at
+runtime. This section documents the environment that the future
+`skeleton_detection/tracking.py` will build on.
 
-| BoxMOT | requires-python | numpy bound |
-|---|---|---|
-| 20.0.0 – 23.0.0 | >=3.10,<3.14 | **>=2.2.0** — incompatible here |
-| 13.0.x – **19.0.0** | >=3.9,<3.13 | unconstrained — usable |
-| <=12.0.10 | >=3.9 | ==1.26.4 — would displace numpy |
+### Version pin — this is load-bearing
 
-We pin **19.0.0**: the newest release that leaves numpy alone. A plain
+BoxMOT's numpy floor moved over time:
+
+| BoxMOT | requires-python | numpy bound | Usable here? |
+|---|---|---|---|
+| 20.0.0 – 23.0.0 (latest) | >=3.10,<3.14 | **>=2.2.0** | NO — displaces numpy |
+| 13.0.x – **19.0.0** | >=3.9,<3.13 | unconstrained | **yes — pinned to 19.0.0** |
+| <=12.0.10 | >=3.9 | ==1.26.4 | NO — displaces numpy |
+
+`19.0.0` is the newest release that leaves numpy alone. A plain
 `pip install boxmot` was dry-run first and would have installed **numpy 2.2.6**,
 displacing the 1.23.5 that chumpy, opencv-python 4.8.1.78 and the compiled
-mmpose/xtcocotools wheels require.
+mmpose/xtcocotools wheels require — an ABI break, not just a version bump.
 
-Install is always done with `-c /etc/pip-constraints.txt`. That constraint file
-is what stops a transitive dependency (pandas, scikit-learn) from dragging
+Install is always done with `-c /etc/pip-constraints.txt`. That constraints
+file is what stops a transitive dependency (pandas, scikit-learn) from dragging
 numpy 2.x in, and it turns any future incompatible resolution into a loud build
 failure instead of a silent runtime ABI break.
 
 Torch/torchvision are **not** touched: boxmot 19.0.0 asks for
-`torch>=2.2.1,<3` and `torchvision>=0.17.1,<1`, which 2.14.0+cu130 / 0.29.0+cu130
-already satisfy.
+`torch>=2.2.1,<3` and `torchvision>=0.17.1,<1`, which 2.14.0+cu130 /
+0.29.0+cu130 already satisfy.
 
-Transitive packages added at audit time (all aarch64 wheels, no source builds):
-`filterpy 1.4.5`, `lapx 0.9.4`, `pandas 2.3.3`, `scikit-learn 1.7.2`,
-`gdown 5.2.2`, `huggingface-hub 1.30.0`, `joblib 1.6.0`, `threadpoolctl 3.6.0`,
-`yacs 0.1.8`, `ftfy 6.3.1`, `regex`, `rich`/`click` support packages.
-`pandas` and `scikit-learn` ship numpy-2-built wheels but declare
-`numpy>=1.22`, and both were verified to import and compute correctly under
-numpy 1.23.5.
+### Core dependencies installed with boxmot
 
-All heavy backends are **optional extras** and were NOT installed: `onnx`,
-`openvino`, `tflite`, `yolo` (ultralytics/yolox), `trackeval`, `evolve`,
-`rtdetr`. TensorRT is not even an extra. faiss is not a dependency at all.
+All aarch64 wheels, no source builds: `filterpy 1.4.5`, `lapx 0.9.4`
+(Hungarian/LAP solver), `pandas 2.3.3`, `scikit-learn 1.7.2`, `gdown 5.2.2`,
+`huggingface-hub 1.30.0`, `joblib`, `threadpoolctl`, `yacs`, `ftfy`, `regex`,
+plus `rich`/`click` support packages. `pandas` and `scikit-learn` ship
+numpy-2-built wheels but declare `numpy>=1.22`, and both were verified to
+import and compute correctly under numpy 1.23.5.
 
-### ReID model
+### Optional backends deliberately NOT installed
 
-- Default used by BoxMOT's own config (`boxmot/configs/modes.yaml`):
-  **`osnet_x0_25_msmt17`**.
-- Checkpoint auto-downloaded to `data/checkpoints/reid/osnet_x0_25_msmt17.pt`
-  (3.06 MB, gitignored), 512-dim embeddings, PyTorch backend.
-- Measured on GB10 (fp32): ~5.0 ms for 1 crop, ~7.0 ms for 4, ~9.3 ms for 8.
+`onnx` / `onnxruntime`, `openvino`, `tflite`, `yolo` (ultralytics + yolox),
+`trackeval`, `evolve`, `rtdetr`, `coreml`. TensorRT is not even a BoxMOT extra.
+FAISS is not a dependency at all. Only the core BoT-SORT + **PyTorch** ReID
+path is installed, which keeps the image free of a second inference runtime.
 
-Smoke tests live in `tools/reid_smoke_test.py` and `tools/botsort_smoke_test.py`.
+## Model assets baked into the image
 
-## Model
+Model files used to live in `data/checkpoints/`, which is both `.gitignore`d
+and `.dockerignore`d — so `git clone` + `docker pull` produced an environment
+with **no weights**. They are now baked into the image by
+`docker/fetch_models.py` at build time, sha256-verified, so a pulled image is
+self-contained:
 
-- Config (bundled with mmpose):
-  `/usr/local/lib/python3.10/dist-packages/mmpose/.mim/configs/body_2d_keypoint/rtmo/body7/rtmo-m_16xb16-600e_body7-640x640.py`
-- Weights: `rtmo-m_16xb16-600e_body7-640x640-39e78cc4_20231211.pth`
+```
+/opt/models/
+├── rtmo/
+│   ├── rtmo-m.py     standalone MMPose config (65.6 kB)
+│   └── rtmo-m.pth    RTMO-M Body7 checkpoint (90.5 MB)
+└── reid/
+    └── osnet_x0_25_msmt17.pt   ReID weights (3.06 MB)
+```
+
+| Asset | Source | sha256 |
+|---|---|---|
+| `rtmo-m.pth` | `download.openmmlab.com/mmpose/v1/projects/rtmo/rtmo-m_16xb16-600e_body7-640x640-39e78cc4_20231211.pth` | `39e78cc4afed7d1dd31ea73ee04842f7d8f8e695d900d41b90746e94728a01c3` |
+| `rtmo-m.py` | the config inside the installed `mmpose` wheel, re-emitted via mmengine | n/a (generated) |
+| `osnet_x0_25_msmt17.pt` | BoxMOT's own registry URL, fetched with `boxmot.utils.download.download_file` | `6f57607fed9f502b9efed546108132ee715df5a5b6e6932c6269bacb47f59f99` |
+
+**Why the RTMO config is re-emitted rather than copied.** The MMPose config
+declares a *relative* `_base_ = ['../../../_base_/default_runtime.py']`, so a
+flat copy would fail to load. `docker/fetch_models.py` runs mmengine's own
+`Config.fromfile(...).dump(...)`, which inlines the merged result into a
+self-contained file. The dumped config was verified to produce **bit-identical**
+keypoints, scores and bboxes versus the original `.mim` config.
+
+**Why the ReID weights are fetched at build time.** BoxMOT would otherwise
+download them on first use at runtime (into whatever directory the process
+happens to use), which is not reproducible and fails on an offline robot. The
+build uses BoxMOT's *own* registry URL and downloader — no third-party mirror —
+and verifies the sha256, so a substituted or truncated file fails the build.
+
+Environment variables exported by the image (also the node's defaults):
+`RTMO_MODEL_CONFIG`, `RTMO_CHECKPOINT`, `REID_CHECKPOINT`.
+
+`docker/verify_image.py` runs at build time and fails the build if numpy,
+torch, torchvision, the OpenMMLab versions, the RTMO import chain,
+pyrealsense2, boxmot 19.0.0, BoT-SORT/ReID imports, or any baked asset is
+missing or displaced.
+
+## Planned architecture (next milestone, not implemented)
+
+```
+D456 -> pyrealsense2 -> RTMO-M -> BoT-SORT + OSNet ReID -> SkeletonFrame
+                                  (same process)          persistent person_id
+```
+
+`skeleton_detection/tracking.py` should load ReID from
+`/opt/models/reid/osnet_x0_25_msmt17.pt`, feed BoT-SORT detections shaped
+`(x1, y1, x2, y2, conf, cls)` taken from RTMO's pre-conversion xyxy boxes, and
+map the returned `det_ind` column back onto the corresponding `PersonSkeleton`.
+
+## Model (RTMO-M)
+
+- Runtime config:     `/opt/models/rtmo/rtmo-m.py`   (baked into the image)
+- Runtime checkpoint: `/opt/models/rtmo/rtmo-m.pth`  (baked into the image)
+- Upstream config: the one bundled with mmpose at
+  `mmpose/.mim/configs/body_2d_keypoint/rtmo/body7/rtmo-m_16xb16-600e_body7-640x640.py`
+- Upstream weights: `rtmo-m_16xb16-600e_body7-640x640-39e78cc4_20231211.pth`
   from `https://download.openmmlab.com/mmpose/v1/projects/rtmo/`
   sha256 `39e78cc4afed7d1dd31ea73ee04842f7d8f8e695d900d41b90746e94728a01c3`
-- Stored in `data/checkpoints/` (gitignored, inside the bind mount).
+
+The node defaults to the `/opt/models` paths; both remain overridable with the
+`model_config` and `checkpoint` ROS parameters. `data/checkpoints/` is no
+longer required at runtime.

@@ -9,7 +9,7 @@ Deliberately does NOT launch realsense2_camera.
 Optional arguments (all forwarded as ROS parameters), e.g.:
 
     ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
-        publish_visualization_image:=true visualization_fps:=10.0
+        enable_tracking:=true publish_visualization_image:=true
 """
 
 import os
@@ -42,6 +42,22 @@ def generate_launch_description() -> LaunchDescription:
         ),
         DeclareLaunchArgument(
             "device", default_value="cuda:0", description="Torch device for RTMO."
+        ),
+        DeclareLaunchArgument(
+            "enable_tracking",
+            default_value="false",
+            description="Enable in-process BoT-SORT tracking; makes "
+            "PersonSkeleton.person_id a persistent track id.",
+        ),
+        DeclareLaunchArgument(
+            "with_reid",
+            default_value="true",
+            description="Use OSNet ReID appearance features inside BoT-SORT.",
+        ),
+        DeclareLaunchArgument(
+            "cmc_method",
+            default_value="none",
+            description="Camera-motion compensation: none, ecc, orb, sift, sof.",
         ),
         DeclareLaunchArgument(
             "publish_visualization_image",
@@ -89,6 +105,9 @@ def generate_launch_description() -> LaunchDescription:
         "realsense_height": LaunchConfiguration("realsense_height"),
         "realsense_fps": LaunchConfiguration("realsense_fps"),
         "device": LaunchConfiguration("device"),
+        "enable_tracking": LaunchConfiguration("enable_tracking"),
+        "with_reid": LaunchConfiguration("with_reid"),
+        "cmc_method": LaunchConfiguration("cmc_method"),
         "publish_visualization_image": LaunchConfiguration(
             "publish_visualization_image"
         ),
