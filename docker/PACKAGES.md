@@ -30,6 +30,7 @@ Container: `ros:humble-ros-base` (Ubuntu 22.04 jammy), Python 3.10.12.
 | json-tricks | 3.17.3 | PyPI | mmpose dependency |
 | munkres | 1.1.4 | PyPI | mmpose dependency |
 | pyrealsense2 | 2.58.3.10794 | PyPI | RealSense Python bindings; version matched to the `ros-humble-librealsense2` 2.58.3 runtime (see below) |
+| boxmot | 19.0.0 | PyPI | BoT-SORT + ReID; **newest release that does not force numpy>=2.2** (see below) |
 
 ## CUDA apt packages (optional for inference)
 
@@ -102,6 +103,56 @@ firmware `5.17.0.10`, USB 3.2. Colour profile **848x480 @ 60 fps `bgr8`** is
 natively advertised, so the frame handed to MMPose needs no colour conversion
 (the RTMO config uses `mean=[0,0,0]`, `std=[1,1,1]`, no `bgr_to_rgb`).
 Measured raw capture rate: **59.8 FPS**.
+
+## Tracking / ReID (BoxMOT audit)
+
+`boxmot` provides BoT-SORT with built-in ReID and accepts detections from an
+external detector, which is what we need for RTMO. It is a pure-Python wheel
+(`py3-none-any`), so aarch64 is not an issue for boxmot itself.
+
+**Version choice is load-bearing.** BoxMOT's numpy floor moved over time:
+
+| BoxMOT | requires-python | numpy bound |
+|---|---|---|
+| 20.0.0 – 23.0.0 | >=3.10,<3.14 | **>=2.2.0** — incompatible here |
+| 13.0.x – **19.0.0** | >=3.9,<3.13 | unconstrained — usable |
+| <=12.0.10 | >=3.9 | ==1.26.4 — would displace numpy |
+
+We pin **19.0.0**: the newest release that leaves numpy alone. A plain
+`pip install boxmot` was dry-run first and would have installed **numpy 2.2.6**,
+displacing the 1.23.5 that chumpy, opencv-python 4.8.1.78 and the compiled
+mmpose/xtcocotools wheels require.
+
+Install is always done with `-c /etc/pip-constraints.txt`. That constraint file
+is what stops a transitive dependency (pandas, scikit-learn) from dragging
+numpy 2.x in, and it turns any future incompatible resolution into a loud build
+failure instead of a silent runtime ABI break.
+
+Torch/torchvision are **not** touched: boxmot 19.0.0 asks for
+`torch>=2.2.1,<3` and `torchvision>=0.17.1,<1`, which 2.14.0+cu130 / 0.29.0+cu130
+already satisfy.
+
+Transitive packages added at audit time (all aarch64 wheels, no source builds):
+`filterpy 1.4.5`, `lapx 0.9.4`, `pandas 2.3.3`, `scikit-learn 1.7.2`,
+`gdown 5.2.2`, `huggingface-hub 1.30.0`, `joblib 1.6.0`, `threadpoolctl 3.6.0`,
+`yacs 0.1.8`, `ftfy 6.3.1`, `regex`, `rich`/`click` support packages.
+`pandas` and `scikit-learn` ship numpy-2-built wheels but declare
+`numpy>=1.22`, and both were verified to import and compute correctly under
+numpy 1.23.5.
+
+All heavy backends are **optional extras** and were NOT installed: `onnx`,
+`openvino`, `tflite`, `yolo` (ultralytics/yolox), `trackeval`, `evolve`,
+`rtdetr`. TensorRT is not even an extra. faiss is not a dependency at all.
+
+### ReID model
+
+- Default used by BoxMOT's own config (`boxmot/configs/modes.yaml`):
+  **`osnet_x0_25_msmt17`**.
+- Checkpoint auto-downloaded to `data/checkpoints/reid/osnet_x0_25_msmt17.pt`
+  (3.06 MB, gitignored), 512-dim embeddings, PyTorch backend.
+- Measured on GB10 (fp32): ~5.0 ms for 1 crop, ~7.0 ms for 4, ~9.3 ms for 8.
+
+Smoke tests live in `tools/reid_smoke_test.py` and `tools/botsort_smoke_test.py`.
 
 ## Model
 

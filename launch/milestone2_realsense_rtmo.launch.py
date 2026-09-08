@@ -9,7 +9,7 @@ Deliberately does NOT launch realsense2_camera.
 Optional arguments (all forwarded as ROS parameters), e.g.:
 
     ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
-        run_duration_sec:=30.0 publish_debug_image:=true
+        publish_visualization_image:=true visualization_fps:=10.0
 """
 
 import os
@@ -44,14 +44,35 @@ def generate_launch_description() -> LaunchDescription:
             "device", default_value="cuda:0", description="Torch device for RTMO."
         ),
         DeclareLaunchArgument(
-            "publish_debug_image",
+            "publish_visualization_image",
             default_value="false",
-            description="Publish the annotated debug image (costs throughput).",
+            description="Publish the live annotated visualization image topic.",
         ),
         DeclareLaunchArgument(
-            "save_debug_images",
+            "visualization_width",
+            default_value="424",
+            description="Width of the published visualization image.",
+        ),
+        DeclareLaunchArgument(
+            "visualization_height",
+            default_value="240",
+            description="Height of the published visualization image.",
+        ),
+        DeclareLaunchArgument(
+            "visualization_fps",
+            default_value="10.0",
+            description="Visualization publish rate (<=0 = every frame).",
+        ),
+        DeclareLaunchArgument(
+            "visualization_reliability",
+            default_value="best_effort",
+            description="QoS reliability for the visualization topic: "
+            "best_effort or reliable.",
+        ),
+        DeclareLaunchArgument(
+            "save_visualization_images",
             default_value="false",
-            description="Write annotated JPGs to disk (costs throughput).",
+            description="Write an annotated file for every processed frame.",
         ),
         DeclareLaunchArgument(
             "run_duration_sec",
@@ -68,8 +89,14 @@ def generate_launch_description() -> LaunchDescription:
         "realsense_height": LaunchConfiguration("realsense_height"),
         "realsense_fps": LaunchConfiguration("realsense_fps"),
         "device": LaunchConfiguration("device"),
-        "publish_debug_image": LaunchConfiguration("publish_debug_image"),
-        "save_debug_images": LaunchConfiguration("save_debug_images"),
+        "publish_visualization_image": LaunchConfiguration(
+            "publish_visualization_image"
+        ),
+        "visualization_width": LaunchConfiguration("visualization_width"),
+        "visualization_height": LaunchConfiguration("visualization_height"),
+        "visualization_fps": LaunchConfiguration("visualization_fps"),
+        "visualization_reliability": LaunchConfiguration("visualization_reliability"),
+        "save_visualization_images": LaunchConfiguration("save_visualization_images"),
         "run_duration_sec": LaunchConfiguration("run_duration_sec"),
     }
 

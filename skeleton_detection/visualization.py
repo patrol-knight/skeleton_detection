@@ -2,8 +2,9 @@
 
 This is the single drawing implementation in the package.  ``rtmo_node`` calls
 :func:`draw_skeleton_overlay` once per frame and then (a) publishes the result
-on ``/skeleton_detection/debug_image`` and/or (b) writes it to disk, so the
-image you open in VS Code is byte-for-byte what the ROS debug topic carries.
+on ``/skeleton_detection/visualization_image`` (downscaled) and/or (b) writes
+it to disk at full resolution, so the file you open in VS Code and the live
+topic show exactly the same annotations.
 
 The functions here take duck-typed "person" objects: anything exposing
 ``person_id`` (int), ``score`` (float), ``bbox`` ([x, y, width, height]) and

@@ -102,6 +102,19 @@ RUN python3 -m pip install --no-cache-dir \
         -c /etc/pip-constraints.txt \
         "pyrealsense2==2.58.3.10794"
 
+# BoT-SORT + ReID tracking stack (dependency audit; not yet wired into the ROS
+# node). Pinned to 19.0.0 deliberately: it is the NEWEST BoxMOT release that
+# leaves numpy unconstrained. BoxMOT >= 20.0.0 requires numpy>=2.2, which would
+# force out the numpy 1.23.5 that chumpy, opencv-python 4.8 and the compiled
+# mmpose/xtcocotools wheels depend on.
+# The constraints file is load-bearing here, not decorative: it keeps pip from
+# pulling numpy 2.x in through a transitive dependency, and makes a future
+# incompatible resolution fail loudly at build time instead of silently
+# breaking the RTMO stack at runtime.
+RUN python3 -m pip install --no-cache-dir \
+        -c /etc/pip-constraints.txt \
+        "boxmot==19.0.0"
+
 # RTMO does not use mmcv native ops, but MMPose imports them at module load time.
 # This stub allows those imports and intentionally fails if an op is actually called.
 COPY docker/mmcv_ext_stub.py \
@@ -111,6 +124,8 @@ COPY docker/mmcv_ext_stub.py \
 RUN python3 -c "\
 import torch, torchvision, mmengine, mmcv, mmdet, mmpose, xtcocotools, chumpy, numpy, cv2; \
 import pyrealsense2 as rs; print('pyrealsense2', rs.__version__); \
+import numpy; assert numpy.__version__.startswith('1.23'), 'numpy was displaced: ' + numpy.__version__; \
+from boxmot.trackers.botsort.botsort import BotSort; from boxmot.reid import ReID; print('boxmot BoT-SORT + ReID import OK'); \
 from mmpose.apis import init_model, inference_bottomup; \
 from mmpose.models.heads.hybrid_heads.rtmo_head import RTMOHead; \
 print('RTMO import chain OK')"

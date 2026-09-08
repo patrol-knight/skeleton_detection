@@ -4,20 +4,25 @@ rtmo_node:
     input_mode: ros_topic
     input_topic: /dummy_camera/image_raw
     output_topic: /skeleton_detection/frame
-    debug_image_topic: /skeleton_detection/debug_image
     model_config: /usr/local/lib/python3.10/dist-packages/mmpose/.mim/configs/body_2d_keypoint/rtmo/body7/rtmo-m_16xb16-600e_body7-640x640.py
     checkpoint: /ros2_ws/src/skeleton_detection/data/checkpoints/rtmo-m_16xb16-600e_body7-640x640-39e78cc4_20231211.pth
     device: cuda:0
     # Detections below this person score are not published at all.
     person_score_threshold: 0.3
     # Node default is false (live mode); the offline workflow wants it on.
-    publish_debug_image: true
+    # Full source resolution here, and no rate limit: this path publishes a
+    # handful of images, not a live stream.
+    publish_visualization_image: true
+    visualization_topic: /skeleton_detection/visualization_image
+    visualization_width: 640
+    visualization_height: 425
+    visualization_fps: 0.0
     # One log line per frame is useful when publishing a handful of images.
     log_every_frame: true
 
     # --- offline visualisation (Milestone 1.5) ---
     joint_score_threshold: 0.3
     draw_joint_scores: false
-    save_debug_images: true
-    debug_output_dir: /ros2_ws/src/skeleton_detection/output/visualizations
-    debug_image_format: jpg
+    save_visualization_images: true
+    visualization_output_dir: /ros2_ws/src/skeleton_detection/output/visualizations
+    visualization_image_format: jpg

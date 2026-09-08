@@ -18,7 +18,6 @@ rtmo_node:
 
     # --- output ---
     output_topic: /skeleton_detection/frame
-    debug_image_topic: /skeleton_detection/debug_image
 
     # --- model ---
     model_config: /usr/local/lib/python3.10/dist-packages/mmpose/.mim/configs/body_2d_keypoint/rtmo/body7/rtmo-m_16xb16-600e_body7-640x640.py
@@ -26,12 +25,23 @@ rtmo_node:
     device: cuda:0
     person_score_threshold: 0.3
 
-    # --- visualisation OFF for the live/performance path ---
-    # Drawing + JPEG encoding + DDS transport all cost throughput.
-    publish_debug_image: false
-    save_debug_images: false
+    # --- visualisation: human-facing only, OFF by default for performance ---
+    # Enable with: -p publish_visualization_image:=true
+    # The visualization topic is rate limited and downscaled independently of
+    # /skeleton_detection/frame, which always runs at the full pipeline rate.
+    publish_visualization_image: false
+    visualization_topic: /skeleton_detection/visualization_image
+    visualization_width: 424
+    visualization_height: 240
+    visualization_fps: 10.0
+    # 'best_effort' suits a live stream (stale frames dropped). Switch to
+    # 'reliable' if a viewer subscribes with reliable QoS and sees nothing.
+    visualization_reliability: best_effort
     draw_joint_scores: false
     joint_score_threshold: 0.3
+    # Offline artefact: writes a file for EVERY processed frame (not rate
+    # limited). Keep false during live runs.
+    save_visualization_images: false
 
     # --- logging ---
     stats_log_period_sec: 1.0     # periodic summary instead of per-frame logs

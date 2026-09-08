@@ -6,7 +6,8 @@ Equivalent to running the two `ros2 run` commands by hand.
 
 Both nodes are configured from the installed YAML files in
 share/skeleton_detection/config, which enable annotated-image saving
-(save_debug_images: true) and hold the image selection for the publisher.
+(save_visualization_images: true) and hold the image selection for the
+publisher.
 To change the input images or the output directory, either edit those YAML
 files or run the nodes manually with -p overrides.
 """
