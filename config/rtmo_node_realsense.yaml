@@ -44,18 +44,57 @@ rtmo_node:
     # ID-switch investigation: raised from 30 to 90. BoxMOT 19.0.0 scales it by
     # the frame rate -- max_time_lost = int(frame_rate / 30.0 * track_buffer) --
     # so at tracking_frame_rate 55 a lost track now survives 165 frames (~3.0 s)
-    # instead of 55 frames (~1.0 s). Deliberately the ONLY association-affecting
-    # value changed: track_high_thresh 0.5, new_track_thresh 0.6,
-    # match_thresh 0.8, proximity_thresh 0.5 and appearance_thresh 0.25 all keep
-    # the node defaults.
+    # instead of 55 frames (~1.0 s). track_high_thresh 0.5, new_track_thresh
+    # 0.6, match_thresh 0.8 and appearance_thresh 0.25 all keep the node
+    # defaults; proximity_thresh is the one other value tuned (below).
     track_buffer: 90
+
+    # BoT-SORT masks the ReID distance to 1.0 whenever
+    #     iou_dist > proximity_thresh,   with   iou_dist = 1 - IoU
+    # so the threshold is expressed in IoU DISTANCE, not raw IoU, and RAISING
+    # it makes the gate MORE permissive:
+    #     proximity_thresh 0.50  ->  ReID usable only for IoU >= 0.50
+    #     proximity_thresh 0.70  ->  ReID usable for       IoU >= 0.30
+    # Raised from BoxMOT's 0.50 to 0.70 after the debug log showed strong
+    # appearance matches (RAW ReID 0.09-0.22, well inside appearance_thresh
+    # 0.25) being discarded at IoU 0.15-0.16. Do NOT "lower" this to 0.30:
+    # that would tighten the gate to IoU >= 0.70.
+    proximity_thresh: 0.70
+
+    # --- OCCLUSION-AWARE TRACKING (delete with occlusion_tracking.py) -----
+    # Experiment: when a matched detection is classified OCCLUDED, its bbox is
+    # NOT used as a Kalman measurement and its crop does NOT update the ReID
+    # feature. Kalman PREDICTION continues from the last trusted state and the
+    # track stays alive, so a person who is slowly occluded keeps a clean
+    # velocity and a clean appearance to be re-matched with.
+    #
+    # Exactly two states, NORMAL and OCCLUDED, from exactly ONE signal:
+    #   is_occluded = visible_ratio < visible_ratio_threshold
+    #
+    # bbox width used to be a second signal and was REMOVED: a person turning
+    # sideways drops to ~0.45 of their frontal box width with 16/17 keypoints
+    # still visible, which produced false OCCLUDED classifications.
+    #
+    # OFF by default -> stock BotSort, zero overhead. None of the BoT-SORT
+    # association thresholds above are touched by this feature.
+    occlusion_aware_tracking: false
+    # A COCO-17 joint counts as visible at or above this per-keypoint score.
+    # This is RTMO's per-JOINT confidence, not the aggregate person score.
+    keypoint_visibility_threshold: 0.30
+    visible_ratio_threshold: 0.50
+    # The two below size the INFORMATIONAL bbox-width history printed in the
+    # debug log. They classify nothing and change no tracker behaviour.
+    normal_bbox_history_size: 15
+    min_normal_width_samples: 5
 
     # --- TEMPORARY TRACKING DEBUG (delete with tracking_debug.py) ---------
     # Writes one human-readable block per NEWLY CREATED BoT-SORT id, with the
     # raw IoU / raw pre-mask ReID / final cost / Hungarian assignment that
     # explain why the detection did not re-attach to an existing track.
     # OFF by default: with it off the tracker is stock BoxMOT and the overhead
-    # is zero. Enable with:
+    # is zero. With occlusion_aware_tracking on, the SAME file also receives
+    # one block per OCCLUDED matched observation and one line per
+    # NORMAL <-> OCCLUDED transition. Enable with:
     #   ros2 launch ... tracking_debug_enabled:=true
     tracking_debug_enabled: false
     tracking_debug_path: /ros2_ws/src/skeleton_detection/output/tracking_debug.log

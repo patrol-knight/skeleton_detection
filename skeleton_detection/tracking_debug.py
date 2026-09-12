@@ -52,8 +52,9 @@ BoxMOT 19.0.0 association flow (verified by reading the installed source)::
       strack_pool = active(Tracked) tracks + lost tracks
       stage 1  _first_association(strack_pool, dets_first)
           STrack.multi_predict(strack_pool)          <- Kalman prediction
-          ious_dists      = iou_distance(pool, dets)
+          ious_dists      = iou_distance(pool, dets)      <- 1 - IoU
           ious_dists_mask = ious_dists > proximity_thresh
+                            i.e. raw IoU < 1 - proximity_thresh
           emb_dists       = embedding_distance(pool, dets)   <- RAW
           emb_dists[emb_dists > appearance_thresh] = 1.0
           emb_dists[ious_dists_mask]               = 1.0     <- proximity kills ReID
@@ -321,9 +322,12 @@ class TrackingDebugWriter:
         with open(self.path, "w", encoding="utf-8") as handle:
             handle.write(
                 f"{SEPARATOR}\n"
-                "TEMPORARY TRACKING DEBUG - BoT-SORT new-track diagnostics\n"
+                "TEMPORARY TRACKING DEBUG - BoT-SORT tracking diagnostics\n"
                 f"opened: {_dt.datetime.now().isoformat(timespec='seconds')}\n"
                 "one section per NEWLY CREATED persistent track id\n"
+                "plus, when occlusion_aware_tracking is on, one block per\n"
+                "OCCLUDED matched observation and one line per NORMAL <->\n"
+                "OCCLUDED transition (see occlusion_tracking.py)\n"
                 f"{SEPARATOR}\n"
             )
 
@@ -349,18 +353,29 @@ class TrackingDebugWriter:
 # ----------------------------------------------------------------------
 # the instrumented tracker
 # ----------------------------------------------------------------------
-def build_instrumented_botsort(debug_writer: TrackingDebugWriter, **botsort_kwargs):
+def build_instrumented_botsort(
+    debug_writer: TrackingDebugWriter, base_cls=None, **botsort_kwargs
+):
     """Construct ``InstrumentedBotSort``.
 
     Imported lazily so ``tracking.py`` can keep raising ``TrackerInitError``
     with its own message when boxmot is missing.
+
+    ``base_cls`` defaults to stock ``BotSort``. It exists so another
+    project-local ``BotSort`` subclass can be instrumented as well -- the
+    occlusion-aware tracker in ``occlusion_tracking.py`` is passed in here so
+    both experiments can run at once. The instrumentation itself is unchanged
+    either way: it only records what the base class computes.
     """
-    from boxmot.trackers.botsort.botsort import BotSort
+    if base_cls is None:
+        from boxmot.trackers.botsort.botsort import BotSort
+
+        base_cls = BotSort
 
     import boxmot.trackers.botsort.botsort as botsort_module
     from boxmot.utils import matching as matching_module
 
-    class InstrumentedBotSort(BotSort):
+    class InstrumentedBotSort(base_cls):
         """BoT-SORT that records, but never changes, its own association math.
 
         Every override delegates to ``super()`` for the actual work. The only
@@ -670,7 +685,9 @@ def build_instrumented_botsort(debug_writer: TrackingDebugWriter, **botsort_kwar
                 f"  track_low_thresh           : {_fmt_num(self.track_low_thresh)}",
                 f"  new_track_thresh           : {_fmt_num(self.new_track_thresh)}",
                 f"  match_thresh               : {_fmt_num(self.match_thresh)}",
-                f"  proximity_thresh           : {_fmt_num(self.proximity_thresh)}",
+                f"  proximity_thresh           : {_fmt_num(self.proximity_thresh)}"
+                f"   (IoU-DISTANCE gate; ReID eligible for raw IoU >= "
+                f"{_fmt_num(1.0 - self.proximity_thresh, '{:.2f}')})",
                 f"  appearance_thresh          : {_fmt_num(self.appearance_thresh)}",
                 f"  with_reid                  : {self.with_reid}",
                 f"  fuse_first_associate       : {self.fuse_first_associate}",
@@ -792,7 +809,9 @@ def build_instrumented_botsort(debug_writer: TrackingDebugWriter, **botsort_kwar
                 f"    raw IoU                    : {_fmt_num(raw_iou)}",
                 f"    IoU distance (1 - IoU)     : {_fmt_num(iou_dist)}",
                 f"    proximity_thresh           : "
-                f"{_fmt_num(self.proximity_thresh)}",
+                f"{_fmt_num(self.proximity_thresh)}"
+                f"   (= raw IoU >= "
+                f"{_fmt_num(1.0 - self.proximity_thresh, '{:.2f}')})",
                 f"    proximity gate             : "
                 f"{'PASS' if prox_pass else 'FAIL'}"
                 f"   (mask is iou_dist > proximity_thresh)",

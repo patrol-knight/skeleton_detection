@@ -57,6 +57,7 @@ from .message_builder import build_skeleton_frame, person_id_semantics
 from .pipeline_stats import PipelineStats
 from .realsense_capture import RealSenseCapture, RealSenseCaptureError
 from .rtmo_inference import PersonDetection, RTMOInference, RTMOInferenceError
+from .occlusion_tracking import OcclusionParams
 from .tracking import DEFAULT_REID_CHECKPOINT, SkeletonTracker, TrackerInitError
 from .visualization import (
     VisualizationWriter,
@@ -157,7 +158,27 @@ class RTMONode(Node):
         self.declare_parameter("track_buffer", 90)
         self.declare_parameter("match_thresh", 0.8)
         self.declare_parameter("appearance_thresh", 0.25)
-        self.declare_parameter("proximity_thresh", 0.5)
+        # 0.7, not BoxMOT's 0.5. The proximity gate masks ReID when
+        # iou_dist > proximity_thresh, and iou_dist = 1 - IoU, so 0.7 keeps
+        # appearance usable down to IoU 0.30 instead of IoU 0.50. RAISING this
+        # value relaxes the gate; lowering it to 0.3 would tighten it to
+        # IoU >= 0.70.
+        self.declare_parameter("proximity_thresh", 0.7)
+        # OCCLUSION-AWARE TRACKING (delete with occlusion_tracking.py) ------
+        # Off by default: with it off a stock BotSort is constructed and the
+        # tracker behaves exactly as before.
+        self.declare_parameter("occlusion_aware_tracking", False)
+        # A COCO joint counts as visible at or above this per-keypoint score.
+        self.declare_parameter("keypoint_visibility_threshold", 0.30)
+        # visible_ratio below this => OCCLUDED. This is the ONLY signal:
+        # bbox width was removed because a person turning sideways halves
+        # their box width while remaining fully visible.
+        self.declare_parameter("visible_ratio_threshold", 0.50)
+        # The two below size the INFORMATIONAL bbox-width history written to
+        # the debug log. They do not affect classification or tracking.
+        self.declare_parameter("normal_bbox_history_size", 15)
+        self.declare_parameter("min_normal_width_samples", 5)
+        # -------------------------------------------------------------------
         # TEMPORARY TRACKING DEBUG: off by default, so normal runs are
         # bit-identical to before. See skeleton_detection/tracking_debug.py.
         self.declare_parameter("tracking_debug_enabled", False)
@@ -209,6 +230,27 @@ class RTMONode(Node):
             if tracking_frame_rate > 0
             else DEFAULT_TRACKING_FRAME_RATE
         )
+        # OCCLUSION-AWARE TRACKING
+        self.occlusion_aware_tracking = bool(value("occlusion_aware_tracking"))
+        self.occlusion_params = OcclusionParams(
+            keypoint_visibility_threshold=float(
+                value("keypoint_visibility_threshold")
+            ),
+            visible_ratio_threshold=float(value("visible_ratio_threshold")),
+            normal_bbox_history_size=int(value("normal_bbox_history_size")),
+            min_normal_width_samples=int(value("min_normal_width_samples")),
+        )
+        if self.occlusion_params.normal_bbox_history_size < 1:
+            raise RuntimeError(
+                "normal_bbox_history_size must be >= 1, got "
+                f"{self.occlusion_params.normal_bbox_history_size}"
+            )
+        if self.occlusion_params.min_normal_width_samples < 1:
+            raise RuntimeError(
+                "min_normal_width_samples must be >= 1, got "
+                f"{self.occlusion_params.min_normal_width_samples}"
+            )
+
         # TEMPORARY TRACKING DEBUG
         self.tracking_debug_enabled = bool(value("tracking_debug_enabled"))
         self.tracking_debug_path = str(value("tracking_debug_path"))
@@ -285,6 +327,9 @@ class RTMONode(Node):
                         self.get_parameter("proximity_thresh").value
                     ),
                     logger=self.get_logger(),
+                    # OCCLUSION-AWARE TRACKING
+                    occlusion_aware_tracking=self.occlusion_aware_tracking,
+                    occlusion_params=self.occlusion_params,
                     # TEMPORARY TRACKING DEBUG
                     debug_enabled=self.tracking_debug_enabled,
                     debug_path=self.tracking_debug_path,
@@ -382,12 +427,27 @@ class RTMONode(Node):
                 f"max_time_lost={self.tracker.max_time_lost} frames; "
                 + person_id_semantics(True)
             )
+            if self.occlusion_aware_tracking:
+                # OCCLUSION-AWARE TRACKING: one line; the numbers already went
+                # out from SkeletonTracker.
+                self.get_logger().warning(
+                    "EXPERIMENTAL occlusion-aware tracking is ON: OCCLUDED "
+                    "observations no longer update the Kalman motion state or "
+                    "the ReID appearance state. Turn it off with "
+                    "occlusion_aware_tracking:=false."
+                )
             if self.tracking_debug_enabled:
                 # TEMPORARY TRACKING DEBUG: one line only. The detail goes to
                 # the debug file, never to the ROS log.
                 self.get_logger().warning(
                     "TEMPORARY new-track debug instrumentation is ON; "
                     f"writing to {self.tracking_debug_path}"
+                    + (
+                        " (occlusion NORMAL/OCCLUDED transitions go to the "
+                        "same file)"
+                        if self.occlusion_aware_tracking
+                        else ""
+                    )
                 )
         else:
             self.get_logger().info(

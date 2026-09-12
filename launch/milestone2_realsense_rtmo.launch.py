@@ -10,6 +10,12 @@ Optional arguments (all forwarded as ROS parameters), e.g.:
 
     ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
         enable_tracking:=true publish_visualization_image:=true
+
+Occlusion-aware tracking (experimental, off by default):
+
+    ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
+        enable_tracking:=true occlusion_aware_tracking:=true \
+        tracking_debug_enabled:=true
 """
 
 import os
@@ -60,12 +66,54 @@ def generate_launch_description() -> LaunchDescription:
             description="Camera-motion compensation: none, ecc, orb, sift, sof.",
         ),
         DeclareLaunchArgument(
+            "proximity_thresh",
+            default_value="0.70",
+            description="IoU-DISTANCE gate above which BoT-SORT discards the "
+            "ReID distance. iou_dist = 1 - IoU, so 0.70 keeps appearance "
+            "usable down to IoU 0.30 and RAISING this value relaxes the gate "
+            "(0.30 would tighten it to IoU >= 0.70).",
+        ),
+        DeclareLaunchArgument(
             "track_buffer",
             default_value="90",
             description="Frames a lost track survives BEFORE frame-rate "
             "scaling. BoxMOT uses int(frame_rate / 30.0 * track_buffer); at "
             "tracking_frame_rate 55 this gives max_time_lost=165 frames.",
         ),
+        # OCCLUSION-AWARE TRACKING (delete with occlusion_tracking.py) -----
+        DeclareLaunchArgument(
+            "occlusion_aware_tracking",
+            default_value="false",
+            description="EXPERIMENTAL: classify each matched detection as "
+            "NORMAL or OCCLUDED; an OCCLUDED one skips the Kalman measurement "
+            "update and freezes the ReID feature. Prediction and the track "
+            "buffer are unaffected. false = stock BoT-SORT behaviour.",
+        ),
+        DeclareLaunchArgument(
+            "keypoint_visibility_threshold",
+            default_value="0.30",
+            description="A COCO-17 joint counts as visible at or above this "
+            "RTMO per-keypoint score.",
+        ),
+        DeclareLaunchArgument(
+            "visible_ratio_threshold",
+            default_value="0.50",
+            description="visible_ratio below this marks the detection "
+            "OCCLUDED.",
+        ),
+        DeclareLaunchArgument(
+            "normal_bbox_history_size",
+            default_value="15",
+            description="INFORMATIONAL ONLY: per-track ring buffer of bbox "
+            "widths shown in the debug log. Classifies nothing.",
+        ),
+        DeclareLaunchArgument(
+            "min_normal_width_samples",
+            default_value="5",
+            description="INFORMATIONAL ONLY: NORMAL widths needed before the "
+            "debug log prints a bbox width ratio at all.",
+        ),
+        # ------------------------------------------------------------------
         # TEMPORARY TRACKING DEBUG (delete with tracking_debug.py) ---------
         DeclareLaunchArgument(
             "tracking_debug_enabled",
@@ -131,6 +179,15 @@ def generate_launch_description() -> LaunchDescription:
         "with_reid": LaunchConfiguration("with_reid"),
         "cmc_method": LaunchConfiguration("cmc_method"),
         "track_buffer": LaunchConfiguration("track_buffer"),
+        "proximity_thresh": LaunchConfiguration("proximity_thresh"),
+        # OCCLUSION-AWARE TRACKING
+        "occlusion_aware_tracking": LaunchConfiguration("occlusion_aware_tracking"),
+        "keypoint_visibility_threshold": LaunchConfiguration(
+            "keypoint_visibility_threshold"
+        ),
+        "visible_ratio_threshold": LaunchConfiguration("visible_ratio_threshold"),
+        "normal_bbox_history_size": LaunchConfiguration("normal_bbox_history_size"),
+        "min_normal_width_samples": LaunchConfiguration("min_normal_width_samples"),
         # TEMPORARY TRACKING DEBUG
         "tracking_debug_enabled": LaunchConfiguration("tracking_debug_enabled"),
         "tracking_debug_path": LaunchConfiguration("tracking_debug_path"),

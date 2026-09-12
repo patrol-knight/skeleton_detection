@@ -106,6 +106,7 @@ skeleton_detection/
 ├── realsense_capture.py
 ├── rtmo_inference.py
 ├── tracking.py
+├── occlusion_tracking.py
 ├── message_builder.py
 ├── pipeline_stats.py
 ├── visualization.py
@@ -121,6 +122,7 @@ Main responsibilities:
 | `realsense_capture.py` | D456 capture and latest-frame-wins buffering |
 | `rtmo_inference.py` | RTMO model loading, inference, and parsing |
 | `tracking.py` | BoT-SORT + OSNet ReID tracking |
+| `occlusion_tracking.py` | Experimental occlusion-aware Kalman/ReID state protection |
 | `message_builder.py` | Converts internal detections into ROS messages |
 | `pipeline_stats.py` | FPS and latency statistics |
 | `visualization.py` | Bounding box, skeleton, ID, score, and visualization rendering |
@@ -660,7 +662,37 @@ BoT-SORT tuning parameters:
 | `track_buffer` | `90` |
 | `match_thresh` | `0.8` |
 | `appearance_thresh` | `0.25` |
-| `proximity_thresh` | `0.5` |
+| `proximity_thresh` | `0.70` |
+
+#### `proximity_thresh` operates on IoU *distance*, not raw IoU
+
+BoT-SORT discards the appearance distance for a pair whenever
+
+```text
+iou_dist > proximity_thresh        with    iou_dist = 1 - IoU
+```
+
+so the threshold is an **IoU-distance** value and **raising** it makes the gate
+**more permissive**:
+
+| `proximity_thresh` | ReID usable for |
+|---:|---|
+| `0.50` (BoxMOT default) | `IoU >= 0.50` |
+| **`0.70` (this package)** | **`IoU >= 0.30`** |
+| `0.30` | `IoU >= 0.70` (tighter — not what you want) |
+
+Raised from `0.50` to `0.70` because the debug log repeatedly showed strong
+appearance matches being thrown away by the spatial gate:
+
+```text
+IoU 0.146   RAW ReID 0.152    appearance PASS, proximity FAIL -> masked to 1.0
+IoU 0.164   RAW ReID 0.218    appearance PASS, proximity FAIL -> masked to 1.0
+IoU 0.159   RAW ReID 0.087    appearance PASS, proximity FAIL -> masked to 1.0
+```
+
+The gate is relaxed, not removed: below `IoU 0.30` appearance is still
+discarded and association falls back to IoU alone. `appearance_thresh` stays
+at `0.25`, so a weak appearance match is still rejected on its own merits.
 
 `track_buffer` was raised from `30` to `90` for the ID-switch investigation.
 BoxMOT 19.0.0 scales it by the frame rate:
@@ -670,8 +702,92 @@ max_time_lost = int(frame_rate / 30.0 * track_buffer)
 ```
 
 so at `tracking_frame_rate = 55` a lost track now survives **165 frames
-(~3.0 s)** instead of 55 frames (~1.0 s). Every other association threshold is
-unchanged.
+(~3.0 s)** instead of 55 frames (~1.0 s). `track_buffer` and
+`proximity_thresh` are the only two association-affecting values that differ
+from the BoxMOT defaults.
+
+### Occlusion-aware tracking (experimental)
+
+Off by default. When on, every matched observation is classified into exactly
+two states, `NORMAL` or `OCCLUDED`, and an `OCCLUDED` observation is prevented
+from corrupting the track's motion and appearance state:
+
+| | `NORMAL` | `OCCLUDED` |
+|---|---|---|
+| Kalman prediction | runs | **runs** (unchanged) |
+| Kalman measurement update | applied | **skipped** |
+| Velocity `mean[4:8]` | updated | **preserved, never reset or zeroed** |
+| ReID `curr_feat` / `smooth_feat` / history | updated | **frozen** |
+| NORMAL bbox-width history | appended | **not appended** |
+| Track lifetime (`frame_id`, `tracklet_len`, `state`, `conf`, `cls`, `det_ind`) | updated | updated |
+
+The detection still receives the track id in both states, so `person_id` is
+unaffected. No association logic changes: IoU distance, the proximity gate,
+ReID distance, the appearance gate, the Hungarian assignment, the track buffer
+and the four association stages are stock BoxMOT, and none of the tuning
+parameters above are touched.
+
+The rule has **one** signal:
+
+```text
+is_occluded = visibility.available
+              and visible_ratio < visible_ratio_threshold
+```
+
+where
+
+```text
+visible_ratio = (# RTMO keypoints with score >= keypoint_visibility_threshold)
+                / (# keypoints)
+```
+
+`visible_ratio` uses RTMO's **per-joint** `keypoint_scores`, not the aggregate
+person score.
+
+**bbox width is not a signal.** An earlier version also marked a detection
+`OCCLUDED` when its width fell below `0.60` of the track's recent median. That
+misfired whenever somebody simply turned sideways — 16/17 keypoints visible,
+nothing occluding them, box down to ~0.45 of its frontal width. A person's own
+pose changes their box width as much as an occluder does, so width cannot tell
+the two apart. The per-track width history is still maintained and still
+printed in the debug log, labelled `classification use: INFORMATIONAL ONLY`; it
+has zero effect on classification or on any tracker state.
+
+| Parameter | Default | Description |
+|---|---:|---|
+| `occlusion_aware_tracking` | `false` | Master switch; `false` = stock BoT-SORT, zero overhead |
+| `keypoint_visibility_threshold` | `0.30` | A joint counts as visible at or above this per-keypoint score |
+| `visible_ratio_threshold` | `0.50` | `visible_ratio` below this marks the detection `OCCLUDED` — **the only classification input** |
+| `normal_bbox_history_size` | `15` | *Informational only:* length of the per-track `NORMAL` bbox-width ring buffer shown in the debug log |
+| `min_normal_width_samples` | `5` | *Informational only:* `NORMAL` widths needed before the debug log prints a width ratio |
+
+Edge cases:
+
+- If RTMO's keypoint scores are missing or non-finite, the visible-ratio
+  criterion is **skipped** (the detection stays `NORMAL`) and a throttled
+  warning is logged. Missing keypoints are never read as zero confidence.
+- A `LOST` track re-activated on an `OCCLUDED` detection gets the same
+  protection: it is re-activated (id preserved, `new_id=False`) but the partial
+  box does not move the filter and does not update the appearance feature.
+
+ON:
+
+```bash
+ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
+  enable_tracking:=true occlusion_aware_tracking:=true \
+  tracking_debug_enabled:=true
+```
+
+OFF (current behaviour):
+
+```bash
+ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
+  enable_tracking:=true occlusion_aware_tracking:=false
+```
+
+Implementation lives entirely in `skeleton_detection/occlusion_tracking.py`;
+nothing under `/usr/local/lib/python3.10/dist-packages/boxmot` is modified. See
+the "Removing it" section of that module.
 
 ### TEMPORARY: new-track debug instrumentation
 
@@ -679,6 +795,13 @@ unchanged.
 |---|---:|---|
 | `tracking_debug_enabled` | `false` | Write one diagnostic block per newly created BoT-SORT id |
 | `tracking_debug_path` | `/ros2_ws/src/skeleton_detection/output/tracking_debug.log` | Debug file; truncated on every node launch |
+
+With `occlusion_aware_tracking:=true` the same file also receives one line per
+`NORMAL <-> OCCLUDED` transition and one block per `OCCLUDED` matched
+observation (plus the frame that returns to `NORMAL`), carrying the visible
+ratio, the width ratio, the reasons, whether the Kalman measurement update was
+skipped, whether ReID was frozen, and the preserved velocity. No embedding
+vectors are written.
 
 Off by default, in which case a stock `BotSort` is constructed and the overhead
 is zero. When on, each **newly allocated** persistent id (not an update, not a

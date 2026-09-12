@@ -47,6 +47,7 @@ from typing import List, Optional, Sequence
 
 import numpy as np
 
+from .occlusion_tracking import OcclusionParams, compute_detection_visibility
 from .rtmo_inference import PersonDetection
 
 # BoxMOT's person class id. Every RTMO detection is a person.
@@ -87,8 +88,15 @@ class SkeletonTracker:
         track_buffer: int = 90,
         match_thresh: float = 0.8,
         appearance_thresh: float = 0.25,
-        proximity_thresh: float = 0.5,
+        # 0.7 (not BoxMOT's default 0.5) so appearance can still contribute at
+        # a moderate IoU. The gate masks ReID when iou_dist > proximity_thresh
+        # and iou_dist == 1 - IoU, so 0.7 keeps ReID eligible down to IoU 0.30
+        # instead of IoU 0.50. Raising this value RELAXES the gate.
+        proximity_thresh: float = 0.7,
         logger=None,
+        # OCCLUSION-AWARE TRACKING -- see occlusion_tracking.py; delete with it.
+        occlusion_aware_tracking: bool = False,
+        occlusion_params: Optional[OcclusionParams] = None,
         # TEMPORARY TRACKING DEBUG -- see tracking_debug.py; delete with it.
         debug_enabled: bool = False,
         debug_path: str = "",
@@ -102,6 +110,16 @@ class SkeletonTracker:
         self._logger = logger
         self.reid_load_seconds = 0.0
         self.track_buffer = int(track_buffer)
+
+        # OCCLUSION-AWARE TRACKING ---------------------------------------
+        self.occlusion_aware_tracking = bool(occlusion_aware_tracking)
+        self.occlusion_params = occlusion_params or OcclusionParams()
+        self.occlusion_logger = None
+        # Counts detections whose RTMO keypoint scores were unusable, so the
+        # fallback is visible in the ROS log instead of being silent.
+        self._visibility_fallbacks = 0
+        self._visibility_fallback_logged = 0
+        # ----------------------------------------------------------------
 
         reid_model = self._build_reid() if self.with_reid else None
 
@@ -139,17 +157,55 @@ class SkeletonTracker:
         )
 
         try:
+            # OCCLUSION-AWARE TRACKING: a BotSort subclass whose STracks refuse
+            # to feed an OCCLUDED observation into the Kalman measurement
+            # update or into the ReID feature update. Off -> `base_cls` stays
+            # stock BotSort and nothing from occlusion_tracking.py runs.
+            base_cls = BotSort
+            if self.occlusion_aware_tracking:
+                from .occlusion_tracking import (
+                    OcclusionDebugLogger,
+                    make_occlusion_aware_botsort,
+                )
+
+                self.occlusion_logger = (
+                    OcclusionDebugLogger(self.debug_writer)
+                    if self.debug_writer is not None
+                    else None
+                )
+                base_cls = make_occlusion_aware_botsort(
+                    BotSort, self.occlusion_params, self.occlusion_logger
+                )
+
             if self.debug_writer is not None:
                 # TEMPORARY TRACKING DEBUG: a recording subclass, same math.
+                # Stacked ON TOP of the occlusion-aware class when both are on.
                 from .tracking_debug import build_instrumented_botsort
 
                 self.tracker = build_instrumented_botsort(
-                    self.debug_writer, **botsort_kwargs
+                    self.debug_writer, base_cls=base_cls, **botsort_kwargs
                 )
             else:
-                self.tracker = BotSort(**botsort_kwargs)
+                self.tracker = base_cls(**botsort_kwargs)
         except Exception as exc:  # noqa: BLE001
             raise TrackerInitError(f"Failed to construct BoT-SORT: {exc}") from exc
+
+        if self.occlusion_aware_tracking:
+            # OCCLUSION-AWARE TRACKING
+            params = self.occlusion_params
+            self._log(
+                "info",
+                "Occlusion-aware tracking ENABLED: an OCCLUDED matched "
+                "detection skips the Kalman measurement update and freezes the "
+                "ReID feature (prediction and track lifetime continue). "
+                f"keypoint_visibility_threshold="
+                f"{params.keypoint_visibility_threshold}, "
+                f"visible_ratio_threshold={params.visible_ratio_threshold}. "
+                "visible_ratio is the ONLY classification signal; bbox width "
+                "is recorded for the debug log but classifies nothing "
+                f"(normal_bbox_history_size={params.normal_bbox_history_size}, "
+                f"min_normal_width_samples={params.min_normal_width_samples}).",
+            )
 
         self._log(
             "info",
@@ -158,6 +214,18 @@ class SkeletonTracker:
             f"device={self.device}, track_buffer={self.track_buffer}, "
             f"max_time_lost={self.max_time_lost} frames "
             f"~{self.max_time_lost / max(self.frame_rate, 1):.2f}s)",
+        )
+        self._log(
+            "info",
+            "Association gates: "
+            f"proximity_thresh={self.tracker.proximity_thresh:.2f} "
+            f"(ReID eligible for IoU >= "
+            f"{1.0 - self.tracker.proximity_thresh:.2f}; the mask is "
+            "iou_dist > proximity_thresh and iou_dist = 1 - IoU), "
+            f"appearance_thresh={self.tracker.appearance_thresh:.2f}, "
+            f"match_thresh={self.tracker.match_thresh:.2f}, "
+            f"track_high_thresh={self.tracker.track_high_thresh:.2f}, "
+            f"new_track_thresh={self.tracker.new_track_thresh:.2f}",
         )
         if self.debug_writer is not None:
             # TEMPORARY TRACKING DEBUG
@@ -246,6 +314,41 @@ class SkeletonTracker:
         classes = np.full((len(detections), 1), PERSON_CLASS_ID, dtype=np.float32)
         return np.concatenate([boxes, scores.reshape(-1, 1), classes], axis=1)
 
+    def _frame_visibility(self, detections: Sequence[PersonDetection]):
+        """One :class:`DetectionVisibility` per detection, same order.
+
+        RTMO always emits a ``(17,)`` float32 ``keypoint_scores`` array, so the
+        unavailable branch is defensive. When it does fire it is logged (not
+        silently read as zero confidence) and the visible-ratio criterion is
+        skipped for that detection.
+        """
+        visibility = [
+            compute_detection_visibility(
+                detection.keypoint_scores,
+                self.occlusion_params.keypoint_visibility_threshold,
+            )
+            for detection in detections
+        ]
+        unusable = sum(1 for v in visibility if not v.available)
+        partial = sum(1 for v in visibility if v.available and v.note)
+        if unusable or partial:
+            self._visibility_fallbacks += unusable + partial
+            # Throttled: one line the first time, then on each power-of-ten.
+            if self._visibility_fallbacks >= self._visibility_fallback_logged * 10:
+                self._visibility_fallback_logged = max(
+                    1, self._visibility_fallbacks
+                )
+                notes = sorted({v.note for v in visibility if v.note})
+                self._log(
+                    "warning",
+                    "Occlusion detection fell back on "
+                    f"{self._visibility_fallbacks} detection(s) so far: "
+                    f"{', '.join(notes)}. The visible-ratio criterion is "
+                    "SKIPPED for those; missing keypoint scores are never "
+                    "treated as zero confidence.",
+                )
+        return visibility
+
     def update(
         self,
         detections: List[PersonDetection],
@@ -264,6 +367,16 @@ class SkeletonTracker:
         frame-local index for that person.
         """
         dets = self.to_boxmot_detections(detections)
+        if self.occlusion_aware_tracking:
+            # OCCLUSION-AWARE TRACKING: the visible-joint ratio is computed
+            # here, from the RTMO per-keypoint scores, and handed to the
+            # tracker keyed by position in `detections` -- which is exactly
+            # BoxMOT's det_ind.
+            self.tracker.set_frame_visibility(
+                self._frame_visibility(detections),
+                frame_index=frame_index,
+                timestamp=timestamp,
+            )
         if self.debug_writer is not None:
             # TEMPORARY TRACKING DEBUG: only so the report can quote the node's
             # own frame counter and wall-clock time. Read, never acted upon.
