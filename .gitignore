@@ -16,3 +16,19 @@
 /output/
 
 /tool/
+/test/
+
+# Python bytecode anywhere (models/ now contains .py config files)
+__pycache__/
+*.py[cod]
+
+# --- Model weights: NEVER commit these ---------------------------------
+# Checkpoints are downloaded into the Docker image at build time by
+# docker/fetch_models.py. The RTMO *config* under models/rtmo/ IS tracked
+# (it is plain Python); only the binary weights are ignored.
+*.pth
+*.pt
+*.onnx
+*.engine
+*.trt
+*.safetensors

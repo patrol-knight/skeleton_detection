@@ -104,6 +104,8 @@ except Exception as exc:  # noqa: BLE001
 print("== baked model assets ==")
 for label, path, min_mb in (
     ("RTMO config", "/opt/models/rtmo/rtmo-m.py", 0.01),
+    # rtmo-m.py's _base_; the model cannot be built without it.
+    ("RTMO config _base_", "/opt/models/rtmo/default_runtime.py", 0.0005),
     ("RTMO checkpoint", "/opt/models/rtmo/rtmo-m.pth", 50.0),
     ("ReID checkpoint", "/opt/models/reid/osnet_x0_25_msmt17.pt", 1.0),
 ):

@@ -81,6 +81,13 @@ INPUT_MODE_REALSENSE = "realsense"
 # buffer is latest-frame-wins. Used when tracking_frame_rate <= 0.
 DEFAULT_TRACKING_FRAME_RATE = 55
 
+# TEMPORARY TRACKING DEBUG: default sink for the BoT-SORT new-track
+# diagnostics. output/ is already gitignored, so nothing lands in git.
+# Delete this constant together with tracking_debug.py.
+DEFAULT_TRACKING_DEBUG_PATH = (
+    "/ros2_ws/src/skeleton_detection/output/tracking_debug.log"
+)
+
 
 class RTMONode(Node):
     def __init__(self) -> None:
@@ -144,10 +151,17 @@ class RTMONode(Node):
         self.declare_parameter("cmc_method", "none")
         self.declare_parameter("track_high_thresh", 0.5)
         self.declare_parameter("new_track_thresh", 0.6)
-        self.declare_parameter("track_buffer", 30)
+        # 90 for the ID-switch investigation (was 30). BoxMOT scales it:
+        # max_time_lost = int(frame_rate / 30.0 * track_buffer), so at the
+        # default tracking_frame_rate of 55 this is 165 frames (~3.0 s).
+        self.declare_parameter("track_buffer", 90)
         self.declare_parameter("match_thresh", 0.8)
         self.declare_parameter("appearance_thresh", 0.25)
         self.declare_parameter("proximity_thresh", 0.5)
+        # TEMPORARY TRACKING DEBUG: off by default, so normal runs are
+        # bit-identical to before. See skeleton_detection/tracking_debug.py.
+        self.declare_parameter("tracking_debug_enabled", False)
+        self.declare_parameter("tracking_debug_path", DEFAULT_TRACKING_DEBUG_PATH)
         # --- visualisation: human-facing only, off by default ---
         self.declare_parameter("publish_visualization_image", False)
         self.declare_parameter(
@@ -195,6 +209,10 @@ class RTMONode(Node):
             if tracking_frame_rate > 0
             else DEFAULT_TRACKING_FRAME_RATE
         )
+        # TEMPORARY TRACKING DEBUG
+        self.tracking_debug_enabled = bool(value("tracking_debug_enabled"))
+        self.tracking_debug_path = str(value("tracking_debug_path"))
+
         cmc = str(value("cmc_method")).lower().strip()
         # BoxMOT's get_cmc_method() accepts None but raises on the string
         # "none"; map the friendly parameter value to the API's contract.
@@ -267,6 +285,9 @@ class RTMONode(Node):
                         self.get_parameter("proximity_thresh").value
                     ),
                     logger=self.get_logger(),
+                    # TEMPORARY TRACKING DEBUG
+                    debug_enabled=self.tracking_debug_enabled,
+                    debug_path=self.tracking_debug_path,
                 )
             except TrackerInitError as exc:
                 raise RuntimeError(f"Tracking could not start: {exc}") from exc
@@ -356,9 +377,18 @@ class RTMONode(Node):
         if self.tracker is not None:
             self.get_logger().info(
                 f"Tracking ENABLED: BoT-SORT with_reid={self.with_reid}, "
-                f"frame_rate={self.tracking_frame_rate}, cmc={self.cmc_method}; "
+                f"frame_rate={self.tracking_frame_rate}, cmc={self.cmc_method}, "
+                f"track_buffer={self.tracker.track_buffer} -> "
+                f"max_time_lost={self.tracker.max_time_lost} frames; "
                 + person_id_semantics(True)
             )
+            if self.tracking_debug_enabled:
+                # TEMPORARY TRACKING DEBUG: one line only. The detail goes to
+                # the debug file, never to the ROS log.
+                self.get_logger().warning(
+                    "TEMPORARY new-track debug instrumentation is ON; "
+                    f"writing to {self.tracking_debug_path}"
+                )
         else:
             self.get_logger().info(
                 "Tracking disabled (enable_tracking=false); "
@@ -470,7 +500,13 @@ class RTMONode(Node):
         active_tracks = 0
         if self.tracker is not None:
             start = time.perf_counter()
-            detections = self.tracker.update(detections, frame_bgr)
+            detections = self.tracker.update(
+                detections,
+                frame_bgr,
+                # TEMPORARY TRACKING DEBUG: quoted in the debug file only.
+                frame_index=self.frame_index,
+                timestamp=time.time(),
+            )
             tracking_ms = (time.perf_counter() - start) * 1000.0
             active_tracks = self.tracker.active_tracks
 

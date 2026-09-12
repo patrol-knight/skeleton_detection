@@ -33,16 +33,23 @@ The workspace provides:
 - Offline image testing and annotated image output
 - Runtime performance statistics for capture, RTMO, tracking, and total pipeline time
 
-Current model assets are baked into the Docker image:
+All model assets are baked into the Docker image, so a fresh
+`git clone` + `docker build` gives a fully runnable container with **no manual
+file copying** and no `docker cp`:
 
 ```text
 /opt/models/
 ├── rtmo/
-│   ├── rtmo-m.py
-│   └── rtmo-m.pth
+│   ├── rtmo-m.py            RTMO-M config          ← tracked in git (models/rtmo/)
+│   ├── default_runtime.py   its `_base_`           ← tracked in git (models/rtmo/)
+│   └── rtmo-m.pth           RTMO-M Body7 weights   ← downloaded during docker build
 └── reid/
-    └── osnet_x0_25_msmt17.pt
+    └── osnet_x0_25_msmt17.pt  OSNet ReID weights   ← downloaded during docker build
 ```
+
+The **configs live in git**; the **weights do not** (they are binaries, and
+`.gitignore` blocks `*.pth` / `*.pt`). Both end up in an image layer, so
+deleting and recreating the container never loses them.
 
 ---
 
@@ -120,29 +127,69 @@ Main responsibilities:
 | `coco_keypoints.py` | COCO-17 keypoint names and connections |
 | `image_publisher.py` | Offline/local-image test input |
 
+Model configs are version-controlled alongside the source:
+
+```text
+models/
+└── rtmo/
+    ├── rtmo-m.py           MMPose RTMO-M (Body7, 640×640) config
+    └── default_runtime.py  the `_base_` rtmo-m.py inherits from
+```
+
+Both are vendored from `open-mmlab/mmpose` v1.3.2. Upstream, `rtmo-m.py`
+declares `_base_ = ['../../../_base_/default_runtime.py']`, which only resolves
+inside the MMPose config tree; the sole edit made here is to point that at the
+sibling `./default_runtime.py`. That base file is not optional — it supplies
+`default_scope = 'mmpose'`, without which `init_model` cannot resolve the model
+registry.
+
 ---
 
 # Quick Start
 
-## 1. Start the Docker container
+Four steps from nothing to a running pipeline. No model file is ever copied by
+hand.
 
-From the DGX Spark host:
+## 0. Clone
 
 ```bash
-cd /home/aims/Desktop/samd/skeleton_detection
+git clone <this-repo-url> skeleton_detection
+cd skeleton_detection
+```
 
+Every command below assumes you are in that clone; `$(pwd)` is used instead of
+any absolute host path, so the workflow is not tied to one machine.
+
+## 1. Build the Docker image
+
+```bash
+docker build -t skeleton_humble_dev .
+```
+
+This installs the pinned OpenMMLab/CUDA stack, copies `models/rtmo/` to
+`/opt/models/rtmo/`, downloads and sha256-verifies the RTMO-M and ReID
+checkpoints, and runs a build-time verification gate. Expect a long first
+build; the checkpoint download needs network access.
+
+## 2. Start the Docker container
+
+```bash
 docker run -d --name skeleton_humble \
   --privileged \
   --network host \
   --ipc host \
   --gpus all \
-  -v /home/aims/Desktop/samd/skeleton_detection:/ros2_ws/src/skeleton_detection \
+  -v "$(pwd)":/ros2_ws/src/skeleton_detection \
   -v /dev:/dev \
   -v /tmp/.X11-unix:/tmp/.X11-unix \
   -e DISPLAY=$DISPLAY \
   skeleton_humble_dev \
   sleep infinity
 ```
+
+The bind mount covers **source code only** — models come from the image, not
+the mount, so editing code on the host still takes effect immediately without
+putting weights on the host.
 
 If the container already exists:
 
@@ -156,9 +203,15 @@ Enter the container:
 docker exec -it skeleton_humble bash
 ```
 
+Sanity-check the baked model assets at any time:
+
+```bash
+docker exec skeleton_humble ls -lh /opt/models/rtmo /opt/models/reid
+```
+
 ---
 
-## 2. Build the ROS package
+## 3. Build the ROS package
 
 Inside the container:
 
@@ -178,6 +231,44 @@ After changing Python or ROS source files, rebuild with:
 cd /ros2_ws
 colcon build --packages-select skeleton_detection
 source /ros2_ws/install/setup.bash
+```
+
+---
+
+## 4. Verify the RTMO node starts
+
+Inside the container, with a RealSense D456 attached:
+
+```bash
+source /opt/ros/humble/setup.bash
+source /ros2_ws/install/setup.bash
+
+ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
+  run_duration_sec:=10.0
+```
+
+A healthy start-up logs the resolved model paths, e.g.:
+
+```text
+[rtmo_node]: RTMO model loaded (config=/opt/models/rtmo/rtmo-m.py, checkpoint=/opt/models/rtmo/rtmo-m.pth)
+```
+
+then periodic pipeline statistics, and exits after 10 seconds.
+
+With no camera attached, the model-loading half can still be checked on its own
+— this loads the config and checkpoint and then fails at camera open, which is
+enough to prove the baked assets are correct:
+
+```bash
+ros2 run skeleton_detection rtmo_node --ros-args -p input_mode:=realsense
+```
+
+Confirm the topic is publishing from a second shell:
+
+```bash
+docker exec -it skeleton_humble bash -lc \
+  'source /opt/ros/humble/setup.bash && source /ros2_ws/install/setup.bash && \
+   ros2 topic hz /skeleton_detection/frame'
 ```
 
 ---
@@ -566,10 +657,43 @@ BoT-SORT tuning parameters:
 |---|---:|
 | `track_high_thresh` | `0.5` |
 | `new_track_thresh` | `0.6` |
-| `track_buffer` | `30` |
+| `track_buffer` | `90` |
 | `match_thresh` | `0.8` |
 | `appearance_thresh` | `0.25` |
 | `proximity_thresh` | `0.5` |
+
+`track_buffer` was raised from `30` to `90` for the ID-switch investigation.
+BoxMOT 19.0.0 scales it by the frame rate:
+
+```text
+max_time_lost = int(frame_rate / 30.0 * track_buffer)
+```
+
+so at `tracking_frame_rate = 55` a lost track now survives **165 frames
+(~3.0 s)** instead of 55 frames (~1.0 s). Every other association threshold is
+unchanged.
+
+### TEMPORARY: new-track debug instrumentation
+
+| Parameter | Default | Description |
+|---|---:|---|
+| `tracking_debug_enabled` | `false` | Write one diagnostic block per newly created BoT-SORT id |
+| `tracking_debug_path` | `/ros2_ws/src/skeleton_detection/output/tracking_debug.log` | Debug file; truncated on every node launch |
+
+Off by default, in which case a stock `BotSort` is constructed and the overhead
+is zero. When on, each **newly allocated** persistent id (not an update, not a
+re-activation of a lost id) appends a human-readable section containing the raw
+IoU matrix, the raw pre-mask ReID distances, the masked cost matrix, the
+Hungarian assignment and which stage the detection fell through. Nothing extra
+goes to the ROS log.
+
+```bash
+ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
+  enable_tracking:=true tracking_debug_enabled:=true
+```
+
+This is throwaway diagnostic code: see the "Removing this instrumentation"
+section of `skeleton_detection/tracking_debug.py`.
 
 For the current static-camera setup:
 
@@ -721,11 +845,9 @@ The capture path uses a **latest-frame-wins** buffer. If processing falls behind
 
 # Docker Image
 
-Build:
+Build (from the repository root):
 
 ```bash
-cd /home/aims/Desktop/samd/skeleton_detection
-
 docker build -t skeleton_humble_dev .
 ```
 
@@ -734,9 +856,16 @@ The Docker build:
 - installs the pinned RTMO/OpenMMLab stack
 - installs `boxmot==19.0.0`
 - preserves `numpy==1.23.5`
-- downloads and verifies model assets
-- places them under `/opt/models`
-- verifies important imports and package versions
+- copies `models/rtmo/` (config, tracked in git) to `/opt/models/rtmo/`
+- downloads and sha256-verifies the checkpoints into `/opt/models`
+- verifies important imports, package versions, and asset presence
+
+Checkpoint sources are official only:
+
+| Asset | Source |
+|---|---|
+| `rtmo-m.pth` | `https://download.openmmlab.com/mmpose/v1/projects/rtmo/rtmo-m_16xb16-600e_body7-640x640-39e78cc4_20231211.pth` |
+| `osnet_x0_25_msmt17.pt` | BoxMOT's own model registry URL, fetched with BoxMOT's downloader |
 
 Relevant Docker helper files:
 
@@ -747,7 +876,14 @@ docker/
 └── mmcv_ext_stub.py
 ```
 
-`fetch_models.py` prepares and checksum-verifies the model assets.
+`fetch_models.py` downloads and checksum-verifies the two checkpoints, and
+asserts that the git-tracked RTMO config was copied in and loads with its
+`_base_` chain resolved. It deliberately does **not** generate the config — a
+missing or broken config fails `docker build`, not node start-up.
+
+To point the node at a different config/checkpoint without rebuilding, override
+the `model_config` / `checkpoint` ROS parameters (or the `RTMO_MODEL_CONFIG` /
+`RTMO_CHECKPOINT` environment variables the image sets).
 
 `verify_image.py` acts as a build-time regression gate for the Python/CUDA/OpenMMLab/BoxMOT environment.
 

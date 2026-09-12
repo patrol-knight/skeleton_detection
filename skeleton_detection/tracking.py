@@ -31,6 +31,13 @@ occasional gaps where stale frames were dropped. ``frame_rate`` is therefore
 configured from the measured pipeline rate, not from the camera rate; it scales
 BoT-SORT's internal track buffer (how long a lost track survives), so passing
 60 would make tracks live ~10% longer than intended in wall-clock terms.
+
+Concretely, BoxMOT 19.0.0 derives the lost-track lifetime as::
+
+    max_time_lost = int(frame_rate / 30.0 * track_buffer)
+
+so ``frame_rate=55`` with ``track_buffer=90`` gives ``max_time_lost=165``
+frames, i.e. about 3.0 s of wall clock at the processed rate.
 """
 
 import os
@@ -74,11 +81,17 @@ class SkeletonTracker:
         half: bool = False,
         track_high_thresh: float = 0.5,
         new_track_thresh: float = 0.6,
-        track_buffer: int = 30,
+        # 90 (not BoxMOT's default 30) for the ID-switch investigation: it
+        # makes buffer expiry an unlikely explanation for an ID switch after a
+        # short occlusion. max_time_lost = int(frame_rate / 30.0 * 90).
+        track_buffer: int = 90,
         match_thresh: float = 0.8,
         appearance_thresh: float = 0.25,
         proximity_thresh: float = 0.5,
         logger=None,
+        # TEMPORARY TRACKING DEBUG -- see tracking_debug.py; delete with it.
+        debug_enabled: bool = False,
+        debug_path: str = "",
     ) -> None:
         self.reid_checkpoint = reid_checkpoint
         self.device = device
@@ -88,8 +101,19 @@ class SkeletonTracker:
         self.half = bool(half)
         self._logger = logger
         self.reid_load_seconds = 0.0
+        self.track_buffer = int(track_buffer)
 
         reid_model = self._build_reid() if self.with_reid else None
+
+        # TEMPORARY TRACKING DEBUG ---------------------------------------
+        # When off, a stock BotSort is constructed and nothing below runs, so
+        # the per-frame cost is exactly zero.
+        self.debug_writer = None
+        if debug_enabled:
+            from .tracking_debug import TrackingDebugWriter
+
+            self.debug_writer = TrackingDebugWriter(debug_path, logger=logger)
+        # ---------------------------------------------------------------
 
         try:
             from boxmot.trackers.botsort.botsort import BotSort
@@ -99,21 +123,31 @@ class SkeletonTracker:
                 "pip install -c /etc/pip-constraints.txt boxmot==19.0.0"
             ) from exc
 
+        botsort_kwargs = dict(
+            reid_model=reid_model,
+            with_reid=self.with_reid,
+            # BoxMOT accepts None to disable camera-motion compensation but
+            # rejects the string "none"; the node maps its parameter for us.
+            cmc_method=self.cmc_method,
+            frame_rate=self.frame_rate,
+            track_high_thresh=track_high_thresh,
+            new_track_thresh=new_track_thresh,
+            track_buffer=track_buffer,
+            match_thresh=match_thresh,
+            appearance_thresh=appearance_thresh,
+            proximity_thresh=proximity_thresh,
+        )
+
         try:
-            self.tracker = BotSort(
-                reid_model=reid_model,
-                with_reid=self.with_reid,
-                # BoxMOT accepts None to disable camera-motion compensation but
-                # rejects the string "none"; the node maps its parameter for us.
-                cmc_method=self.cmc_method,
-                frame_rate=self.frame_rate,
-                track_high_thresh=track_high_thresh,
-                new_track_thresh=new_track_thresh,
-                track_buffer=track_buffer,
-                match_thresh=match_thresh,
-                appearance_thresh=appearance_thresh,
-                proximity_thresh=proximity_thresh,
-            )
+            if self.debug_writer is not None:
+                # TEMPORARY TRACKING DEBUG: a recording subclass, same math.
+                from .tracking_debug import build_instrumented_botsort
+
+                self.tracker = build_instrumented_botsort(
+                    self.debug_writer, **botsort_kwargs
+                )
+            else:
+                self.tracker = BotSort(**botsort_kwargs)
         except Exception as exc:  # noqa: BLE001
             raise TrackerInitError(f"Failed to construct BoT-SORT: {exc}") from exc
 
@@ -121,9 +155,29 @@ class SkeletonTracker:
             "info",
             f"BoT-SORT ready (with_reid={self.with_reid}, "
             f"cmc_method={self.cmc_method}, frame_rate={self.frame_rate}, "
-            f"device={self.device})",
+            f"device={self.device}, track_buffer={self.track_buffer}, "
+            f"max_time_lost={self.max_time_lost} frames "
+            f"~{self.max_time_lost / max(self.frame_rate, 1):.2f}s)",
         )
+        if self.debug_writer is not None:
+            # TEMPORARY TRACKING DEBUG
+            self._log(
+                "warning",
+                "TEMPORARY tracking debug is ENABLED; new-track diagnostics "
+                f"are being written to {self.debug_writer.path} (truncated at "
+                "startup). Turn it off with tracking_debug_enabled:=false.",
+            )
         self.last_track_count = 0
+
+    @property
+    def max_time_lost(self) -> int:
+        """BoxMOT's internal lost-track lifetime, in frames.
+
+        BoxMOT 19.0.0 derives it once in ``BotSort.__init__`` as
+        ``int(frame_rate / 30.0 * track_buffer)``; this reads the value the
+        tracker actually ended up with rather than recomputing it.
+        """
+        return int(self.tracker.max_time_lost)
 
     # ------------------------------------------------------------------
     def _log(self, level: str, message: str) -> None:
@@ -193,7 +247,11 @@ class SkeletonTracker:
         return np.concatenate([boxes, scores.reshape(-1, 1), classes], axis=1)
 
     def update(
-        self, detections: List[PersonDetection], frame_bgr: np.ndarray
+        self,
+        detections: List[PersonDetection],
+        frame_bgr: np.ndarray,
+        frame_index: Optional[int] = None,
+        timestamp: Optional[float] = None,
     ) -> List[PersonDetection]:
         """Assign persistent ``track_id`` to ``detections`` in place.
 
@@ -206,6 +264,11 @@ class SkeletonTracker:
         frame-local index for that person.
         """
         dets = self.to_boxmot_detections(detections)
+        if self.debug_writer is not None:
+            # TEMPORARY TRACKING DEBUG: only so the report can quote the node's
+            # own frame counter and wall-clock time. Read, never acted upon.
+            self.tracker.debug_frame_index = frame_index
+            self.tracker.debug_timestamp = timestamp
         tracks = np.asarray(self.tracker.update(dets, frame_bgr))
         self.last_track_count = int(tracks.shape[0]) if tracks.size else 0
 

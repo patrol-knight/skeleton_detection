@@ -41,6 +41,24 @@ rtmo_node:
     # 'none' disables camera-motion compensation (right for a static camera).
     # Other options: ecc, orb, sift, sof.
     cmc_method: "none"
+    # ID-switch investigation: raised from 30 to 90. BoxMOT 19.0.0 scales it by
+    # the frame rate -- max_time_lost = int(frame_rate / 30.0 * track_buffer) --
+    # so at tracking_frame_rate 55 a lost track now survives 165 frames (~3.0 s)
+    # instead of 55 frames (~1.0 s). Deliberately the ONLY association-affecting
+    # value changed: track_high_thresh 0.5, new_track_thresh 0.6,
+    # match_thresh 0.8, proximity_thresh 0.5 and appearance_thresh 0.25 all keep
+    # the node defaults.
+    track_buffer: 90
+
+    # --- TEMPORARY TRACKING DEBUG (delete with tracking_debug.py) ---------
+    # Writes one human-readable block per NEWLY CREATED BoT-SORT id, with the
+    # raw IoU / raw pre-mask ReID / final cost / Hungarian assignment that
+    # explain why the detection did not re-attach to an existing track.
+    # OFF by default: with it off the tracker is stock BoxMOT and the overhead
+    # is zero. Enable with:
+    #   ros2 launch ... tracking_debug_enabled:=true
+    tracking_debug_enabled: false
+    tracking_debug_path: /ros2_ws/src/skeleton_detection/output/tracking_debug.log
 
     # --- visualisation: human-facing only, OFF by default for performance ---
     # Enable with: -p publish_visualization_image:=true

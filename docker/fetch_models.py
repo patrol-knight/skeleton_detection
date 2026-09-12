@@ -8,25 +8,26 @@ which is both ``.gitignore``d and ``.dockerignore``d.  Anyone who did
 weights, and the node failed at start-up.  Baking the assets into the image at
 a stable path makes a pulled image self-contained.
 
+This script downloads the WEIGHTS only.  The RTMO config is version-controlled
+in the repository under ``models/rtmo/`` and copied into the image by the
+Dockerfile ``COPY`` immediately above the line that runs this script -- so the
+config the image runs is the config a reviewer can read in git.  This script
+then asserts that copy is present and loadable.
+
 Layout produced::
 
     /opt/models/
     ├── rtmo/
-    │   ├── rtmo-m.py     standalone (base-resolved) MMPose config
-    │   └── rtmo-m.pth    official RTMO-M Body7 checkpoint
+    │   ├── rtmo-m.py           MMPose config      (COPY'd from models/rtmo/)
+    │   ├── default_runtime.py  its _base_         (COPY'd from models/rtmo/)
+    │   └── rtmo-m.pth          official RTMO-M Body7 checkpoint (downloaded)
     └── reid/
-        └── osnet_x0_25_msmt17.pt   ReID weights for the future BoT-SORT work
+        └── osnet_x0_25_msmt17.pt   ReID weights   (downloaded)
 
 Sources are official only:
   * RTMO checkpoint -> download.openmmlab.com (the URL published in the MMPose
     RTMO project), verified against the sha256 that MMPose encodes in the
     filename.
-  * RTMO config     -> the config shipped inside the installed ``mmpose`` wheel
-    (``mmpose/.mim/configs/...``).  It is re-emitted through mmengine's own
-    ``Config.dump()`` because the original declares a RELATIVE
-    ``_base_ = ['../../../_base_/default_runtime.py']`` and would not load from
-    a flat directory.  The dump inlines the merged result, so the copy is
-    self-contained; it was verified to produce bit-identical inference output.
   * ReID weights    -> BoxMOT's own registry URL, fetched with BoxMOT's own
     downloader, then checksum-verified.  No third-party mirror is used.
 
@@ -53,11 +54,6 @@ RTMO_CHECKPOINT_URL = (
 RTMO_CHECKPOINT_SHA256 = (
     "39e78cc4afed7d1dd31ea73ee04842f7d8f8e695d900d41b90746e94728a01c3"
 )
-RTMO_SOURCE_CONFIG = (
-    "/usr/local/lib/python3.10/dist-packages/mmpose/.mim/configs/"
-    "body_2d_keypoint/rtmo/body7/rtmo-m_16xb16-600e_body7-640x640.py"
-)
-
 REID_MODEL_NAME = "osnet_x0_25_msmt17.pt"
 REID_SHA256 = "6f57607fed9f502b9efed546108132ee715df5a5b6e6932c6269bacb47f59f99"
 
@@ -92,23 +88,44 @@ def fetch_rtmo_checkpoint() -> None:
     verify(dest, RTMO_CHECKPOINT_SHA256, "RTMO checkpoint")
 
 
-def emit_rtmo_config() -> None:
-    """Write a standalone, base-resolved copy of the official RTMO-M config."""
+def check_rtmo_config() -> None:
+    """Assert the repo-vendored RTMO config was COPY'd in and actually loads.
+
+    The config is NOT generated here: the Dockerfile copies models/rtmo/ from
+    the repository.  This function is the build-time gate that catches a
+    missing COPY, a renamed file, or a broken _base_ chain -- and it catches it
+    during `docker build` rather than at node start-up on the robot.
+    """
     from mmengine import Config
 
-    dest = RTMO_DIR / "rtmo-m.py"
-    source = Path(RTMO_SOURCE_CONFIG)
-    if not source.is_file():
-        raise SystemExit(f"FATAL: MMPose RTMO config not found at {source}")
-    print(f"[rtmo] resolving config {source.name} -> {dest}")
-    Config.fromfile(str(source)).dump(str(dest))
-    # Reload the emitted file on its own to prove it no longer depends on the
-    # relative _base_ path it was written from.
-    reloaded = Config.fromfile(str(dest))
-    assert "model" in reloaded and "test_dataloader" in reloaded, (
-        "resolved RTMO config is missing required sections"
-    )
-    print(f"  {dest.stat().st_size / 1e3:.1f} kB, reloads standalone OK")
+    config = RTMO_DIR / "rtmo-m.py"
+    base = RTMO_DIR / "default_runtime.py"
+    for path, why in (
+        (config, "COPY models/rtmo/ /opt/models/rtmo/ in the Dockerfile"),
+        (base, "rtmo-m.py declares it as its _base_"),
+    ):
+        if not path.is_file():
+            raise SystemExit(
+                f"FATAL: expected {path} to exist -- {why}.\n"
+                "The RTMO config is version-controlled in models/rtmo/; it is "
+                "not downloaded or generated."
+            )
+
+    print(f"[rtmo] validating vendored config {config}")
+    # Loading resolves the _base_ chain, so a broken sibling path fails here.
+    loaded = Config.fromfile(str(config))
+    missing = [
+        key
+        for key in ("model", "test_dataloader", "default_scope")
+        if key not in loaded
+    ]
+    if missing:
+        raise SystemExit(
+            f"FATAL: {config} is missing required section(s): {missing}. "
+            "'default_scope' comes from default_runtime.py; without it "
+            "init_model cannot resolve the mmpose registry."
+        )
+    print(f"  {config.stat().st_size / 1e3:.1f} kB, _base_ resolves OK")
 
 
 def fetch_reid_checkpoint() -> None:
@@ -126,11 +143,13 @@ def fetch_reid_checkpoint() -> None:
 
 
 def main() -> None:
+    # RTMO_DIR normally already exists (the Dockerfile COPY creates it);
+    # mkdir keeps the script runnable standalone for debugging.
     RTMO_DIR.mkdir(parents=True, exist_ok=True)
     REID_DIR.mkdir(parents=True, exist_ok=True)
 
+    check_rtmo_config()
     fetch_rtmo_checkpoint()
-    emit_rtmo_config()
     fetch_reid_checkpoint()
 
     print("\nBaked model assets:")

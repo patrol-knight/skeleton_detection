@@ -124,7 +124,17 @@ COPY docker/mmcv_ext_stub.py \
 # image is self-contained. Previously these lived in the source tree's
 # data/checkpoints/, which is both .gitignore'd and .dockerignore'd, so
 # `git clone` + `docker pull` produced an environment with no weights.
-# Every file is sha256-verified; a bad download fails the build.
+#
+# The RTMO config is version-controlled in this repo (models/rtmo/) and copied
+# in here, so the config the image runs is the config you can read in git.
+# It is two files: rtmo-m.py plus the default_runtime.py it inherits from.
+COPY models/rtmo/ /opt/models/rtmo/
+
+# The .pth/.pt weights are NOT in git (too large); they are downloaded here at
+# build time from their official sources and sha256-verified, so a corrupted or
+# substituted file fails the build instead of silently shipping. Because they
+# live in an image layer, destroying and recreating a container never loses
+# them.
 COPY docker/fetch_models.py /tmp/fetch_models.py
 RUN python3 /tmp/fetch_models.py && rm -f /tmp/fetch_models.py
 

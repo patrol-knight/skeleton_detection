@@ -60,6 +60,28 @@ def generate_launch_description() -> LaunchDescription:
             description="Camera-motion compensation: none, ecc, orb, sift, sof.",
         ),
         DeclareLaunchArgument(
+            "track_buffer",
+            default_value="90",
+            description="Frames a lost track survives BEFORE frame-rate "
+            "scaling. BoxMOT uses int(frame_rate / 30.0 * track_buffer); at "
+            "tracking_frame_rate 55 this gives max_time_lost=165 frames.",
+        ),
+        # TEMPORARY TRACKING DEBUG (delete with tracking_debug.py) ---------
+        DeclareLaunchArgument(
+            "tracking_debug_enabled",
+            default_value="false",
+            description="TEMPORARY: log why BoT-SORT created each NEW track id "
+            "to tracking_debug_path. Off = stock BoxMOT, zero overhead.",
+        ),
+        DeclareLaunchArgument(
+            "tracking_debug_path",
+            default_value="/ros2_ws/src/skeleton_detection/output/"
+            "tracking_debug.log",
+            description="TEMPORARY: new-track diagnostics file. Truncated on "
+            "every node launch.",
+        ),
+        # ------------------------------------------------------------------
+        DeclareLaunchArgument(
             "publish_visualization_image",
             default_value="false",
             description="Publish the live annotated visualization image topic.",
@@ -108,6 +130,10 @@ def generate_launch_description() -> LaunchDescription:
         "enable_tracking": LaunchConfiguration("enable_tracking"),
         "with_reid": LaunchConfiguration("with_reid"),
         "cmc_method": LaunchConfiguration("cmc_method"),
+        "track_buffer": LaunchConfiguration("track_buffer"),
+        # TEMPORARY TRACKING DEBUG
+        "tracking_debug_enabled": LaunchConfiguration("tracking_debug_enabled"),
+        "tracking_debug_path": LaunchConfiguration("tracking_debug_path"),
         "publish_visualization_image": LaunchConfiguration(
             "publish_visualization_image"
         ),
