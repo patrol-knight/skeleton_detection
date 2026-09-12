@@ -22,6 +22,7 @@ from typing import List, Optional
 import numpy as np
 
 from .coco_keypoints import COCO_KEYPOINT_NAMES, NUM_COCO_KEYPOINTS
+from .person_depth import NO_DEPTH
 
 
 @dataclass
@@ -41,6 +42,11 @@ class PersonDetection:
         detection_index: position of this detection in the frame's list. This
             is what BoxMOT echoes back as ``det_ind``, and it is how a track is
             joined to the exact skeleton that produced it.
+        depth: estimated distance of the person from the camera in METERS,
+            filled in after inference by
+            :func:`skeleton_detection.person_depth.compute_person_depth`.
+            ``NaN`` means "not available" (no depth stream, or no visible
+            keypoint with a usable depth sample) and is the default.
     """
 
     bbox_xyxy: np.ndarray
@@ -49,6 +55,7 @@ class PersonDetection:
     keypoint_scores: np.ndarray
     detection_index: int
     track_id: Optional[int] = None
+    depth: float = NO_DEPTH
 
     @property
     def person_id(self) -> int:

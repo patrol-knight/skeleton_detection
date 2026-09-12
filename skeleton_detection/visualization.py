@@ -9,7 +9,9 @@ topic show exactly the same annotations.
 The functions here take duck-typed "person" objects: anything exposing
 ``person_id`` (int), ``score`` (float), ``bbox`` ([x, y, width, height]) and
 ``joints`` (51 floats, [x, y, conf] * 17) works.  ``PersonSkeleton`` messages
-satisfy that, so no ROS message import is needed here.
+satisfy that, so no ROS message import is needed here.  ``depth`` (float,
+meters, NaN = unavailable) is read when present and rendered as
+``Depth: N/A`` when it is missing or NaN.
 
 ``person_id`` is drawn as-is.  When tracking is enabled it is a persistent
 BoT-SORT track id; when tracking is off it is the frame-local detection index.
@@ -30,6 +32,7 @@ from .coco_keypoints import (
     COCO_KEYPOINT_NAMES,
     NUM_COCO_KEYPOINTS,
 )
+from .person_depth import NO_DEPTH, format_depth
 
 
 # BGR colours.
@@ -136,7 +139,8 @@ def draw_skeleton_overlay(
 
     Args:
         image_bgr: the ORIGINAL source frame (BGR, unmodified resolution).
-        persons: objects with ``person_id``/``score``/``bbox``/``joints``.
+        persons: objects with ``person_id``/``score``/``bbox``/``joints``,
+            and optionally ``depth`` (meters; NaN or absent -> "N/A").
         joint_score_threshold: joints below this confidence are not drawn, and
             a connection is drawn only when BOTH endpoints are above it.
         draw_joint_scores: print each drawn joint's confidence next to it.
@@ -202,7 +206,13 @@ def draw_skeleton_overlay(
         # Person label above the box; if that would land in the title band,
         # drop it just inside the top edge of the box instead so it always
         # stays visually attached to the right person.
-        label = f"ID {person.person_id}  score={float(person.score):.2f}"
+        # getattr keeps the duck-typed contract: a person object without a
+        # depth field simply shows "N/A" instead of raising.
+        depth = float(getattr(person, "depth", NO_DEPTH))
+        label = (
+            f"ID {person.person_id}  score={float(person.score):.2f}"
+            f" | Depth: {format_depth(depth)}"
+        )
         _, label_height, label_baseline = _text_extent(
             label, font_scale, label_thickness
         )

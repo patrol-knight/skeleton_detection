@@ -47,6 +47,13 @@ def generate_launch_description() -> LaunchDescription:
             "realsense_fps", default_value="60", description="Colour frame rate."
         ),
         DeclareLaunchArgument(
+            "realsense_enable_depth",
+            default_value="true",
+            description="Open the Z16 depth stream and align it to colour, so "
+            "PersonSkeleton.depth carries the person's distance in meters. "
+            "false = colour only, depth published as NaN.",
+        ),
+        DeclareLaunchArgument(
             "device", default_value="cuda:0", description="Torch device for RTMO."
         ),
         DeclareLaunchArgument(
@@ -174,6 +181,7 @@ def generate_launch_description() -> LaunchDescription:
         "realsense_width": LaunchConfiguration("realsense_width"),
         "realsense_height": LaunchConfiguration("realsense_height"),
         "realsense_fps": LaunchConfiguration("realsense_fps"),
+        "realsense_enable_depth": LaunchConfiguration("realsense_enable_depth"),
         "device": LaunchConfiguration("device"),
         "enable_tracking": LaunchConfiguration("enable_tracking"),
         "with_reid": LaunchConfiguration("with_reid"),

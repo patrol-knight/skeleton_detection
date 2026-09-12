@@ -11,7 +11,11 @@ in exactly one place:
 * ``person_id``: the persistent BoT-SORT track id when tracking is enabled and
   the tracker returned a track for this detection; otherwise the frame-local
   detection index. See :func:`person_id_semantics`.
-* ``position``: still ``(0, 0, 0)`` -- depth/3D is a later milestone.
+* ``position``: still ``(0, 0, 0)`` -- full 3D deprojection is a later
+  milestone; only the scalar ``depth`` below is filled in.
+* ``depth``: the person's estimated distance from the camera in METERS,
+  computed by :mod:`skeleton_detection.person_depth` and already attached to
+  the detection by the node. ``NaN`` when unavailable -- never ``0``.
 """
 
 from typing import List, Sequence
@@ -22,6 +26,7 @@ from std_msgs.msg import Header
 from skeleton_detection.msg import PersonSkeleton, SkeletonFrame
 
 from .coco_keypoints import COCO_CONNECTIONS_FLAT, NUM_COCO_KEYPOINTS
+from .person_depth import NO_DEPTH
 from .rtmo_inference import PersonDetection
 
 
@@ -48,9 +53,12 @@ def build_person_skeleton(detection: PersonDetection) -> PersonSkeleton:
     message.bbox = [x_min, y_min, x_max - x_min, y_max - y_min]
     message.joints = joints
     message.connections = list(COCO_CONNECTIONS_FLAT)
-    # No depth in this milestone: position is always zero and must be treated
-    # as invalid by consumers.
+    # position is still the full 3D point, which is NOT computed yet: it stays
+    # zero and must be treated as invalid by consumers. The scalar depth below
+    # is the only 3D information published so far.
     message.position = Point(x=0.0, y=0.0, z=0.0)
+    # Already estimated upstream (rtmo_node -> person_depth); NaN = unavailable.
+    message.depth = float(getattr(detection, "depth", NO_DEPTH))
     return message
 
 

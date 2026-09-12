@@ -22,14 +22,26 @@ the previous unconsumed one and the overwritten frame is counted as *dropped*.
 Latency therefore stays bounded at roughly one camera period plus one
 inference, instead of growing without limit.
 
-Depth readiness
----------------
-No depth stream is enabled in this milestone, but the structure does not block
-it: :meth:`RealSenseCapture._build_config` is the single place where streams
-are declared, the pipeline profile is retained, and colour intrinsics are
-exposed.  Adding an aligned depth stream later means enabling it there, adding
-an ``rs.align`` step in the capture loop, and carrying the depth array in
-:class:`CapturedFrame` -- not rewriting the architecture.
+Depth, and why it is ALIGNED TO COLOUR
+--------------------------------------
+When ``enable_depth`` is set (the default), a Z16 depth stream is opened
+alongside the colour stream and every frameset is pushed through
+``rs.align(rs.stream.color)`` **in the capture loop** before the arrays are
+copied out.  This is the ONLY place in the package where depth-to-colour
+alignment happens.
+
+It has to happen, because the D4xx depth and colour sensors sit at different
+positions on the module and have different intrinsics: the raw depth frame is
+in the depth sensor's own pixel grid.  RTMO runs on the COLOUR image, so its
+keypoints are colour pixels, and indexing an unaligned depth frame with them
+would read the wrong part of the scene.  After ``rs.align`` the depth image has
+the colour frame's size and intrinsics, and ``depth[v, u]`` is the distance at
+colour pixel ``(u, v)`` -- which is exactly what
+:mod:`skeleton_detection.person_depth` assumes.
+
+The array is carried in :class:`CapturedFrame` in RAW Z16 units; the metric
+conversion uses :attr:`RealSenseCapture.depth_scale` (meters per unit) and is
+done by the depth module, not here.
 """
 
 import threading
@@ -53,6 +65,11 @@ class CapturedFrame:
     # diagnostics only: it lives in the camera's clock domain, NOT in the ROS
     # clock domain, and is deliberately never mixed into the ROS header.
     hardware_timestamp_ms: float
+    # (H, W) uint16 Z16 depth ALIGNED TO THE COLOUR FRAME: same size as
+    # image_bgr, same pixel coordinates, RAW units (multiply by
+    # RealSenseCapture.depth_scale for meters). None when depth is disabled or
+    # when this particular frameset carried no depth frame.
+    depth_image: Optional[np.ndarray] = None
 
 
 @dataclass
@@ -91,6 +108,10 @@ class RealSenseCapture:
             already in the BGR order the RTMO config expects (its data
             preprocessor uses mean=[0,0,0], std=[1,1,1] and no bgr_to_rgb), and
             no per-frame colour conversion is needed.
+        enable_depth: also open the Z16 depth stream (same
+            width/height/fps as colour) and align every frameset to the colour
+            frame, so ``CapturedFrame.depth_image`` can be indexed with colour
+            pixel coordinates. Costs one alignment per captured frame.
         serial: optional device serial number, for multi-camera setups.
         clock_ns: callable returning ROS-clock nanoseconds; injected by the
             node so capture timestamps come from the same clock as the
@@ -103,6 +124,7 @@ class RealSenseCapture:
         height: int = 480,
         fps: int = 60,
         color_format: str = "bgr8",
+        enable_depth: bool = True,
         serial: str = "",
         clock_ns=None,
         wait_timeout_ms: int = 5000,
@@ -112,6 +134,7 @@ class RealSenseCapture:
         self.height = int(height)
         self.fps = int(fps)
         self.color_format = str(color_format).lower()
+        self.enable_depth = bool(enable_depth)
         self.serial = str(serial)
         self.wait_timeout_ms = int(wait_timeout_ms)
         self._clock_ns = clock_ns or (lambda: time.time_ns())
@@ -133,6 +156,10 @@ class RealSenseCapture:
         self.stats = CaptureStats()
         self.device_info: Dict[str, str] = {}
         self.color_intrinsics = None
+        # Meters per raw Z16 unit, read from the device once the pipeline is
+        # up (~0.001 on a D4xx). 0.0 while depth is disabled/not started.
+        self.depth_scale = 0.0
+        self._align = None
         self._started = False
 
     # ------------------------------------------------------------------
@@ -201,13 +228,12 @@ class RealSenseCapture:
         self._device = device
         return self.device_info
 
-    def supported_color_profiles(self) -> List[Tuple[int, int, int, str]]:
-        """(width, height, fps, format) tuples advertised by the colour sensor."""
-        rs = self._import_sdk()
+    def _supported_profiles(self, stream) -> List[Tuple[int, int, int, str]]:
+        """(width, height, fps, format) tuples advertised for one stream type."""
         profiles = []
         for sensor in self._device.query_sensors():
             for profile in sensor.get_stream_profiles():
-                if profile.stream_type() != rs.stream.color:
+                if profile.stream_type() != stream:
                     continue
                 video = profile.as_video_stream_profile()
                 profiles.append(
@@ -220,30 +246,56 @@ class RealSenseCapture:
                 )
         return sorted(set(profiles))
 
+    def supported_color_profiles(self) -> List[Tuple[int, int, int, str]]:
+        """(width, height, fps, format) tuples advertised by the colour sensor."""
+        rs = self._import_sdk()
+        return self._supported_profiles(rs.stream.color)
+
+    def supported_depth_profiles(self) -> List[Tuple[int, int, int, str]]:
+        """(width, height, fps, format) tuples advertised by the depth sensor."""
+        rs = self._import_sdk()
+        return self._supported_profiles(rs.stream.depth)
+
     def _validate_requested_profile(self) -> None:
         """Fail with the supported list rather than guessing a fallback."""
-        available = self.supported_color_profiles()
-        requested = (self.width, self.height, self.fps, self.color_format)
+        self._require_profile(
+            self.supported_color_profiles(),
+            (self.width, self.height, self.fps, self.color_format),
+            "colour",
+        )
+        if self.enable_depth:
+            # Depth is requested at the colour resolution; rs.align resamples
+            # it onto the colour grid anyway, and matching sizes keeps the
+            # alignment cheap.
+            self._require_profile(
+                self.supported_depth_profiles(),
+                (self.width, self.height, self.fps, "z16"),
+                "depth",
+            )
+
+    def _require_profile(self, available, requested, label: str) -> None:
         if requested in available:
             return
-
+        width, height, fps, fmt = requested
         same_size = sorted(
-            {
-                (w, h, f, fmt)
-                for (w, h, f, fmt) in available
-                if w == self.width and h == self.height
-            }
+            {(w, h, f, p) for (w, h, f, p) in available if w == width and h == height}
         )
         raise RealSenseCaptureError(
-            f"Requested colour profile {self.width}x{self.height}@{self.fps} "
-            f"{self.color_format} is not supported by this device/SDK.\n"
+            f"Requested {label} profile {width}x{height}@{fps} {fmt} is not "
+            f"supported by this device/SDK.\n"
             f"  Profiles at this resolution: {same_size or 'none'}\n"
             f"  Change realsense_width/height/fps/color_format to a supported "
-            f"combination; nothing is silently substituted."
+            f"combination"
+            + (
+                " (or set realsense_enable_depth:=false to run without depth)"
+                if label == "depth"
+                else ""
+            )
+            + "; nothing is silently substituted."
         )
 
     def _build_config(self):
-        """Single place where streams are declared (depth would be added here)."""
+        """Single place where streams are declared (colour, and optionally depth)."""
         rs = self._import_sdk()
         config = rs.config()
         if self.serial:
@@ -252,9 +304,12 @@ class RealSenseCapture:
         config.enable_stream(
             rs.stream.color, self.width, self.height, color_format, self.fps
         )
-        # Future depth work goes here, e.g.:
-        #   config.enable_stream(rs.stream.depth, w, h, rs.format.z16, fps)
-        # plus an rs.align(rs.stream.color) applied in _capture_loop.
+        if self.enable_depth:
+            # Same geometry as colour; rs.align(rs.stream.color) in
+            # _capture_loop is what actually puts it on the colour pixel grid.
+            config.enable_stream(
+                rs.stream.depth, self.width, self.height, rs.format.z16, self.fps
+            )
         return config
 
     # ------------------------------------------------------------------
@@ -279,6 +334,19 @@ class RealSenseCapture:
         self.color_intrinsics = video_profile.get_intrinsics()
         self._started = True
 
+        if self.enable_depth:
+            # THE depth-to-colour alignment object. Created once; applied to
+            # every frameset in _capture_loop.
+            self._align = rs.align(rs.stream.color)
+            depth_sensor = self._profile.get_device().first_depth_sensor()
+            self.depth_scale = float(depth_sensor.get_depth_scale())
+            if self.depth_scale <= 0.0:
+                raise RealSenseCaptureError(
+                    f"Device reported a non-positive depth scale "
+                    f"({self.depth_scale}); refusing to publish depths that "
+                    "cannot be converted to meters."
+                )
+
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._capture_loop, name="realsense_capture", daemon=True
@@ -293,7 +361,13 @@ class RealSenseCapture:
             f"usb={self.device_info['usb_type']}, "
             f"sdk={self.device_info['sdk_version']}) "
             f"colour {video_profile.width()}x{video_profile.height()}@"
-            f"{video_profile.fps()} {self.color_format}",
+            f"{video_profile.fps()} {self.color_format}"
+            + (
+                f" + depth z16 aligned to colour "
+                f"(depth_scale={self.depth_scale:.6f} m/unit)"
+                if self.enable_depth
+                else " (depth disabled)"
+            ),
         )
 
     def stop(self) -> None:
@@ -315,6 +389,7 @@ class RealSenseCapture:
             except RuntimeError as exc:
                 self._log("warn", f"Error stopping RealSense pipeline: {exc}")
         self._pipeline = None
+        self._align = None
         self._started = False
 
     # ------------------------------------------------------------------
@@ -332,6 +407,12 @@ class RealSenseCapture:
                 self._log("warn", f"RealSense wait_for_frames failed: {exc}")
                 continue
 
+            # DEPTH-TO-COLOUR ALIGNMENT -- the one and only place it happens.
+            # After this the depth frame has the colour frame's size and
+            # intrinsics, so RTMO's colour-space keypoints index it directly.
+            if self._align is not None:
+                frames = self._align.process(frames)
+
             color = frames.get_color_frame()
             if not color:
                 continue
@@ -340,6 +421,15 @@ class RealSenseCapture:
             # soon as the frame object is released, and copying lets the SDK
             # reuse its pool immediately (~1.2 MB, sub-millisecond).
             image = np.asanyarray(color.get_data()).copy()
+
+            depth_image = None
+            if self._align is not None:
+                depth = frames.get_depth_frame()
+                # A frameset can legitimately arrive without depth; the frame
+                # is still delivered and the consumer reports depth as NaN.
+                if depth:
+                    depth_image = np.asanyarray(depth.get_data()).copy()
+
             now_ns = self._clock_ns()
 
             captured = CapturedFrame(
@@ -347,6 +437,7 @@ class RealSenseCapture:
                 capture_time_ns=now_ns,
                 sequence=self._sequence,
                 hardware_timestamp_ms=color.get_timestamp(),
+                depth_image=depth_image,
             )
             self._sequence += 1
 

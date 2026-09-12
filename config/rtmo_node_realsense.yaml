@@ -14,6 +14,11 @@ rtmo_node:
     # RTMO config expects, so no per-frame colour conversion is done.
     realsense_color_format: bgr8
     realsense_serial: ""          # empty = first device found
+    # Z16 depth at the same resolution/rate, ALIGNED TO COLOUR inside the
+    # capture thread (rs.align(rs.stream.color)), so RTMO's colour-space
+    # keypoints index it directly. Set false to run colour-only; then
+    # PersonSkeleton.depth is NaN for every person.
+    realsense_enable_depth: true
     camera_frame_id: camera_color_optical_frame
 
     # --- output ---
@@ -26,6 +31,17 @@ rtmo_node:
     checkpoint: /opt/models/rtmo/rtmo-m.pth
     device: cuda:0
     person_score_threshold: 0.3
+
+    # --- per-person depth (skeleton_detection/person_depth.py) ---
+    # PersonSkeleton.depth [m] = median over the visible keypoints of the
+    # median of each keypoint's 3x3 depth neighbourhood. NaN when no visible
+    # keypoint has a valid depth sample -- never 0.
+    # A keypoint votes only at/above this RTMO per-JOINT confidence.
+    depth_keypoint_score_threshold: 0.3
+    # Optional metric sanity bounds; <= 0 disables that bound. Zero, NaN and
+    # infinite depth samples are always rejected regardless of these.
+    depth_min_m: 0.0
+    depth_max_m: 0.0
 
     # --- tracking: BoT-SORT + OSNet ReID, in this same process ---
     # OFF by default: it costs throughput and changes person_id semantics.

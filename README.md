@@ -59,27 +59,33 @@ deleting and recreating the container never loses them.
 Intel RealSense D456
         │
         │ pyrealsense2
+        │ rs.align(rs.stream.color)
         ▼
-848×480 BGR NumPy frame
-        │
-        │ same Python process
-        ▼
-      RTMO-M
-        │
-        ├── bbox (xyxy)
-        ├── person confidence
-        └── COCO-17 keypoints
-        │
-        ▼
-  BoT-SORT Tracking          optional
-        │
-        ├── motion / IoU
-        └── OSNet ReID       optional
-              │
+848×480 BGR NumPy frame  +  aligned Z16 depth frame
+        │                              │
+        │ same Python process          │
+        ▼                              │
+      RTMO-M                           │
+        │                              │
+        ├── bbox (xyxy)                │
+        ├── person confidence          │
+        └── COCO-17 keypoints          │
+        │                              │
+        ▼                              │
+  BoT-SORT Tracking          optional  │
+        │                              │
+        ├── motion / IoU               │
+        └── OSNet ReID       optional  │
+              │                        │
               └── crops people directly from the SAME BGR frame
-        │
-        ▼
- persistent track_id
+        │                              │
+        ▼                              ▼
+ persistent track_id           person_depth module
+        │                       two-stage median
+        │                              │
+        └──────────────┬───────────────┘
+                       ▼
+                person depth (m)
         │
         ▼
  SkeletonFrame ROS message
@@ -485,6 +491,7 @@ bbox
 joints
 connections
 position
+depth
 ```
 
 Current conventions:
@@ -505,8 +512,59 @@ connections:
 
 position:
 currently (0,0,0)
-3D localization is not implemented yet
+full 3D deprojection is not implemented yet
+
+depth:
+estimated distance of the person from the camera,
+in METERS
+NaN = not available (never 0)
 ```
+
+### `depth` semantics
+
+`depth` is a single scalar per person, in meters, estimated from the RealSense
+depth image aligned to the colour frame. It is computed as a **two-stage
+median**:
+
+```text
+for every VISIBLE keypoint (joint confidence >= depth_keypoint_score_threshold):
+    3x3 depth neighbourhood around (u, v)
+        drop zero / NaN / inf samples
+        median  ->  joint_depth
+
+drop keypoints with no valid joint_depth
+
+median of the remaining joint_depth values  ->  person.depth
+```
+
+The median is used at both stages on purpose: depth around a person is
+bimodal (person surface vs. background), and a mean would place the person in
+the empty space between the two. It must not be replaced by a mean.
+
+If no visible keypoint yields a valid depth — no depth stream, the person is
+out of the depth range, or the depth is all holes — `depth` is `NaN`, never
+`0`. Consumers must test with `math.isnan()`; the visualization prints
+`Depth: N/A`.
+
+The implementation lives in `skeleton_detection/person_depth.py`, which is
+pure NumPy (no ROS, no pyrealsense2) and is covered by
+`test/test_person_depth.py`.
+
+### Depth-to-colour alignment
+
+RTMO runs on the COLOUR image, so its keypoints are colour pixels. The raw
+depth frame lives in the depth sensor's own pixel grid, so it is passed
+through `rs.align(rs.stream.color)` in the capture thread
+(`skeleton_detection/realsense_capture.py`, `_capture_loop`) before the array
+is handed on. That is the single place alignment happens; `person_depth.py`
+assumes its input is already aligned. The device depth scale (meters per raw
+Z16 unit) is read once in `RealSenseCapture.start()` and applied inside the
+depth module, so nothing is ever scaled twice.
+
+Depth is on by default and can be turned off with
+`realsense_enable_depth:=false`, in which case every `depth` is `NaN`. In
+`input_mode=ros_topic` there is no depth stream at all, so `depth` is always
+`NaN` on that path.
 
 ### `person_id` semantics
 
@@ -544,6 +602,16 @@ KEEP_LAST
 depth = 1
 VOLATILE
 ```
+
+Each drawn person is labelled with its ID, its detection score and its depth:
+
+```text
+ID 7  score=0.91 | Depth: 3.24 m
+ID 8  score=0.84 | Depth: N/A
+```
+
+`Depth: N/A` means the depth for that person is `NaN` (no depth stream, or no
+visible keypoint with a valid depth sample).
 
 The visualization topic is intended only for inspection, not as a machine-readable perception contract.
 
@@ -611,6 +679,7 @@ Use this to inspect:
 - bbox
 - joints
 - connections
+- `depth` (meters; `nan` when unavailable)
 
 ---
 
@@ -1018,8 +1087,9 @@ the `model_config` / `checkpoint` ROS parameters (or the `RTMO_MODEL_CONFIG` /
 - ReID currently reduces pipeline throughput to roughly 38–40 FPS with people.
 - `tracking_frame_rate` is fixed when BoT-SORT is constructed and does not dynamically adapt to measured runtime FPS.
 - `cmc_method=none` assumes a static-camera baseline.
-- `position` is not yet populated with depth-derived XYZ.
-- No 3D person localization is implemented yet.
+- `position` is not yet populated with depth-derived XYZ; only the scalar
+  `depth` field is filled in.
+- No full 3D person localization (deprojection to XYZ) is implemented yet.
 - No TensorRT optimization is currently used.
 
 ---
@@ -1031,11 +1101,11 @@ The next planned perception stage is:
 ```text
 tracked person
     ↓
-aligned RealSense depth
+aligned RealSense depth          done
     ↓
-robust body anchor
+robust body anchor               done (two-stage median -> PersonSkeleton.depth)
     ↓
-3D deprojection
+3D deprojection                  next
     ↓
 PersonSkeleton.position
 ```

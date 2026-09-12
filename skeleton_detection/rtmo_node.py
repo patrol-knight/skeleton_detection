@@ -5,8 +5,10 @@ ROS surface (parameters, publishers, threads, lifecycle); the actual work lives
 in focused modules::
 
     realsense_capture.RealSenseCapture   camera + latest-frame-wins buffer
+                                         (depth aligned to colour lives here)
     rtmo_inference.RTMOInference         RTMO-M model + result parsing
     tracking.SkeletonTracker             BoT-SORT + OSNet ReID
+    person_depth                         aligned depth -> per-person depth [m]
     message_builder                      internal -> ROS message conversion
     visualization                        drawing + the two visualization sinks
     pipeline_stats.PipelineStats         timing/throughput accounting
@@ -15,6 +17,7 @@ Per-frame order (tracking runs BEFORE messages are built, so person_id is
 already the persistent track id at publication time)::
 
     frame -> RTMO -> [PersonDetection] -> tracker.update() -> track_id attached
+          -> person_depth -> detection.depth [m]
           -> SkeletonFrame -> /skeleton_detection/frame -> optional visualization
 
 Input modes (``input_mode`` parameter):
@@ -35,6 +38,7 @@ Outputs::
 import os
 import threading
 import time
+from dataclasses import replace
 from typing import List, Optional
 
 import cv2
@@ -54,6 +58,7 @@ from std_msgs.msg import Header
 from skeleton_detection.msg import SkeletonFrame
 
 from .message_builder import build_skeleton_frame, person_id_semantics
+from .person_depth import NO_DEPTH, DepthParams, compute_person_depth
 from .pipeline_stats import PipelineStats
 from .realsense_capture import RealSenseCapture, RealSenseCaptureError
 from .rtmo_inference import PersonDetection, RTMOInference, RTMOInferenceError
@@ -132,6 +137,9 @@ class RTMONode(Node):
         self.declare_parameter("realsense_fps", 60)
         self.declare_parameter("realsense_color_format", "bgr8")
         self.declare_parameter("realsense_serial", "")
+        # Depth stream, aligned to colour inside RealSenseCapture. Required for
+        # PersonSkeleton.depth; with it off every person's depth is NaN.
+        self.declare_parameter("realsense_enable_depth", True)
         self.declare_parameter("camera_frame_id", "camera_color_optical_frame")
         # --- outputs ---
         self.declare_parameter("output_topic", "/skeleton_detection/frame")
@@ -140,6 +148,14 @@ class RTMONode(Node):
         self.declare_parameter("checkpoint", DEFAULT_CHECKPOINT)
         self.declare_parameter("device", "cuda:0")
         self.declare_parameter("person_score_threshold", 0.3)
+        # --- per-person depth (see skeleton_detection/person_depth.py) ---
+        # A keypoint votes on the person's depth only at/above this RTMO
+        # per-joint confidence.
+        self.declare_parameter("depth_keypoint_score_threshold", 0.3)
+        # Optional metric sanity bounds; <= 0 disables the bound. Zero, NaN and
+        # infinite depth samples are rejected regardless.
+        self.declare_parameter("depth_min_m", 0.0)
+        self.declare_parameter("depth_max_m", 0.0)
         # --- tracking (BoT-SORT + ReID, in this same process) ---
         self.declare_parameter("enable_tracking", False)
         self.declare_parameter("with_reid", True)
@@ -220,6 +236,18 @@ class RTMONode(Node):
         self.checkpoint = str(value("checkpoint"))
         self.device = str(value("device"))
         self.person_score_threshold = float(value("person_score_threshold"))
+
+        self.realsense_enable_depth = bool(value("realsense_enable_depth"))
+        self.depth_params = DepthParams(
+            # Filled in from the device once the camera is open; 1.0 would mean
+            # "the image is already in meters".
+            depth_scale=1.0,
+            keypoint_score_threshold=float(
+                value("depth_keypoint_score_threshold")
+            ),
+            min_depth_m=float(value("depth_min_m")),
+            max_depth_m=float(value("depth_max_m")),
+        )
 
         self.enable_tracking = bool(value("enable_tracking"))
         self.with_reid = bool(value("with_reid"))
@@ -389,6 +417,7 @@ class RTMONode(Node):
             height=int(self.get_parameter("realsense_height").value),
             fps=int(self.get_parameter("realsense_fps").value),
             color_format=str(self.get_parameter("realsense_color_format").value),
+            enable_depth=self.realsense_enable_depth,
             serial=str(self.get_parameter("realsense_serial").value),
             clock_ns=lambda: self.get_clock().now().nanoseconds,
             logger=self.get_logger(),
@@ -398,12 +427,39 @@ class RTMONode(Node):
         except RealSenseCaptureError as exc:
             raise RuntimeError(f"RealSense capture could not start: {exc}") from exc
 
+        if self.realsense_enable_depth:
+            # The capture thread hands over RAW Z16; this is the only place the
+            # device's meters-per-unit scale enters the depth pipeline.
+            self.depth_params = replace(
+                self.depth_params, depth_scale=self.capture.depth_scale
+            )
+            self.get_logger().info(
+                "Depth ENABLED: z16 aligned to colour in RealSenseCapture, "
+                f"depth_scale={self.capture.depth_scale:.6f} m/unit; "
+                "PersonSkeleton.depth = median of per-joint 3x3 medians over "
+                "keypoints with score >= "
+                f"{self.depth_params.keypoint_score_threshold:.2f}"
+                + (
+                    f", clamped to [{self.depth_params.min_depth_m or 0:.2f}, "
+                    f"{self.depth_params.max_depth_m:.2f}] m"
+                    if self.depth_params.max_depth_m > 0
+                    or self.depth_params.min_depth_m > 0
+                    else ""
+                )
+            )
+        else:
+            self.get_logger().warning(
+                "Depth DISABLED (realsense_enable_depth=false): "
+                "PersonSkeleton.depth is NaN for every person"
+            )
+
         intrinsics = self.capture.color_intrinsics
         if intrinsics is not None:
             self.get_logger().info(
                 f"Colour intrinsics: fx={intrinsics.fx:.2f} fy={intrinsics.fy:.2f} "
                 f"ppx={intrinsics.ppx:.2f} ppy={intrinsics.ppy:.2f} "
-                f"(recorded for future depth/3D work; unused in this milestone)"
+                f"(recorded for future 3D deprojection; the scalar depth field "
+                f"does not need them)"
             )
 
         self._worker = threading.Thread(
@@ -509,7 +565,9 @@ class RTMONode(Node):
             header.frame_id = self.camera_frame_id
 
             try:
-                self._process_frame(captured.image_bgr, header)
+                self._process_frame(
+                    captured.image_bgr, header, captured.depth_image
+                )
             except NotImplementedError as exc:
                 self._fatal_error = (
                     f"RTMO hit a stubbed mmcv native op: {exc}. A full mmcv "
@@ -528,7 +586,9 @@ class RTMONode(Node):
             return
 
         try:
-            self._process_frame(frame_bgr, msg.header)
+            # ros_topic mode carries colour only, so depth stays unavailable
+            # (NaN) for every person on this path.
+            self._process_frame(frame_bgr, msg.header, None)
         except NotImplementedError as exc:
             self.get_logger().fatal(
                 f"RTMO hit a stubbed mmcv native op: {exc}. "
@@ -545,8 +605,18 @@ class RTMONode(Node):
     # ------------------------------------------------------------------
     # the pipeline
     # ------------------------------------------------------------------
-    def _process_frame(self, frame_bgr: np.ndarray, header: Header) -> None:
-        """RTMO -> tracking -> messages -> publish -> optional visualization."""
+    def _process_frame(
+        self,
+        frame_bgr: np.ndarray,
+        header: Header,
+        depth_image: Optional[np.ndarray] = None,
+    ) -> None:
+        """RTMO -> tracking -> depth -> messages -> publish -> visualization.
+
+        ``depth_image`` is the RAW Z16 frame ALREADY ALIGNED TO COLOUR by
+        :class:`~skeleton_detection.realsense_capture.RealSenseCapture`, or
+        ``None`` when no depth stream is running.
+        """
         total_start = time.perf_counter()
 
         start = time.perf_counter()
@@ -569,6 +639,11 @@ class RTMONode(Node):
             )
             tracking_ms = (time.perf_counter() - start) * 1000.0
             active_tracks = self.tracker.active_tracks
+
+        # Depth is attached AFTER tracking and BEFORE the message is built, so
+        # person_id and depth in the published message describe the same
+        # detection. It never modifies boxes, ids or keypoints.
+        self._attach_person_depth(detections, depth_image)
 
         frame_msg = build_skeleton_frame(header, self.frame_index, detections)
         self.frame_publisher.publish(frame_msg)
@@ -598,6 +673,29 @@ class RTMONode(Node):
                 + (f", drawn joints/person: {visible}" if visible else "")
             )
         self.frame_index += 1
+
+    def _attach_person_depth(
+        self, detections: List[PersonDetection], depth_image: Optional[np.ndarray]
+    ) -> None:
+        """Fill ``detection.depth`` [m] for every detection in this frame.
+
+        Thin wrapper only: the estimation itself lives in
+        :mod:`skeleton_detection.person_depth`. With no depth image every
+        detection keeps the NaN default, which the message and the overlay both
+        render as "unavailable".
+        """
+        if depth_image is None:
+            for detection in detections:
+                detection.depth = NO_DEPTH
+            return
+
+        for detection in detections:
+            detection.depth = compute_person_depth(
+                depth_image,
+                detection.keypoints_xy,
+                detection.keypoint_scores,
+                self.depth_params,
+            )
 
     def _handle_visualization(
         self, frame_bgr: np.ndarray, persons, header: Header
