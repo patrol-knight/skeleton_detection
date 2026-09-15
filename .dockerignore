@@ -1,0 +1,15 @@
+.git/
+.gitignore
+
+__pycache__/
+**/__pycache__/
+*.py[cod]
+
+build/
+install/
+log/
+
+.vscode/
+.codex/
+
+data/

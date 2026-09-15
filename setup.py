@@ -21,13 +21,13 @@ setup(
     zip_safe=True,
     maintainer="samdong",
     maintainer_email="hydong__sam@outlook.com",
-    description="ROS 2 Python package for skeleton detection and tracking.",
+    description="ROS 2 Python package for RTMO skeleton detection.",
     license="MIT",
     extras_require={"test": ["pytest"]},
     entry_points={
         "console_scripts": [
-            "camera_reader_node = skeleton_detection.camera_reader:main",
-            "skeleton_detection_node = skeleton_detection.skeleton_detection:main",
+            "image_publisher = skeleton_detection.image_publisher:main",
+            "rtmo_node = skeleton_detection.rtmo_node:main",
         ],
     },
 )

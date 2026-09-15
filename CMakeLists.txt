@@ -35,18 +35,18 @@ install(
 set(generated_script_dir "${CMAKE_CURRENT_BINARY_DIR}/generated_scripts")
 file(MAKE_DIRECTORY "${generated_script_dir}")
 
-file(WRITE "${generated_script_dir}/camera_reader_node" [=[
+file(WRITE "${generated_script_dir}/image_publisher" [=[
 #!/usr/bin/env python3
-from skeleton_detection.camera_reader import main
+from skeleton_detection.image_publisher import main
 
 
 if __name__ == "__main__":
     main()
 ]=])
 
-file(WRITE "${generated_script_dir}/skeleton_detection_node" [=[
+file(WRITE "${generated_script_dir}/rtmo_node" [=[
 #!/usr/bin/env python3
-from skeleton_detection.skeleton_detection import main
+from skeleton_detection.rtmo_node import main
 
 
 if __name__ == "__main__":
@@ -55,8 +55,8 @@ if __name__ == "__main__":
 
 if(NOT WIN32)
   file(CHMOD
-    "${generated_script_dir}/camera_reader_node"
-    "${generated_script_dir}/skeleton_detection_node"
+    "${generated_script_dir}/image_publisher"
+    "${generated_script_dir}/rtmo_node"
     PERMISSIONS
       OWNER_READ OWNER_WRITE OWNER_EXECUTE
       GROUP_READ GROUP_EXECUTE
@@ -66,8 +66,8 @@ endif()
 
 install(
   PROGRAMS
-    "${generated_script_dir}/camera_reader_node"
-    "${generated_script_dir}/skeleton_detection_node"
+    "${generated_script_dir}/image_publisher"
+    "${generated_script_dir}/rtmo_node"
   DESTINATION lib/${PROJECT_NAME}
 )
 
