@@ -50,8 +50,9 @@ def generate_launch_description() -> LaunchDescription:
             "realsense_enable_depth",
             default_value="true",
             description="Open the Z16 depth stream and align it to colour, so "
-            "PersonSkeleton.depth carries the person's distance in meters. "
-            "false = colour only, depth published as NaN.",
+            "PersonSkeleton.position carries the person's XYZ in the colour "
+            "optical frame and depth the Euclidean distance, in meters. "
+            "false = colour only, position/depth published as NaN.",
         ),
         DeclareLaunchArgument(
             "device", default_value="cuda:0", description="Torch device for RTMO."
@@ -163,6 +164,12 @@ def generate_launch_description() -> LaunchDescription:
             "best_effort or reliable.",
         ),
         DeclareLaunchArgument(
+            "draw_person_xyz",
+            default_value="false",
+            description="DEBUG: append each person's camera-frame XYZ [m] to "
+            "the overlay label.",
+        ),
+        DeclareLaunchArgument(
             "save_visualization_images",
             default_value="false",
             description="Write an annotated file for every processed frame.",
@@ -206,6 +213,7 @@ def generate_launch_description() -> LaunchDescription:
         "visualization_height": LaunchConfiguration("visualization_height"),
         "visualization_fps": LaunchConfiguration("visualization_fps"),
         "visualization_reliability": LaunchConfiguration("visualization_reliability"),
+        "draw_person_xyz": LaunchConfiguration("draw_person_xyz"),
         "save_visualization_images": LaunchConfiguration("save_visualization_images"),
         "run_duration_sec": LaunchConfiguration("run_duration_sec"),
     }

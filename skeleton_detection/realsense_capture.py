@@ -42,6 +42,12 @@ colour pixel ``(u, v)`` -- which is exactly what
 The array is carried in :class:`CapturedFrame` in RAW Z16 units; the metric
 conversion uses :attr:`RealSenseCapture.depth_scale` (meters per unit) and is
 done by the depth module, not here.
+
+Each aligned depth value is the optical-axis Z of that pixel IN THE COLOUR
+CAMERA frame (``rs.align`` reprojects the depth points through the
+depth->colour extrinsics), so the matching intrinsics for 3D deprojection are
+the COLOUR stream's. They are read once in :meth:`RealSenseCapture.start` and
+exposed as :attr:`RealSenseCapture.camera_intrinsics`.
 """
 
 import threading
@@ -50,6 +56,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
+
+from .person_depth import CameraIntrinsics
 
 
 @dataclass
@@ -155,7 +163,11 @@ class RealSenseCapture:
         self._sequence = 0
         self.stats = CaptureStats()
         self.device_info: Dict[str, str] = {}
+        # Raw rs.intrinsics of the ACTIVE colour stream (kept for its
+        # distortion model/coeffs), and the same numbers as a pyrealsense2-free
+        # CameraIntrinsics for person_depth. Both None until start().
         self.color_intrinsics = None
+        self.camera_intrinsics: Optional[CameraIntrinsics] = None
         # Meters per raw Z16 unit, read from the device once the pipeline is
         # up (~0.001 on a D4xx). 0.0 while depth is disabled/not started.
         self.depth_scale = 0.0
@@ -331,7 +343,18 @@ class RealSenseCapture:
             ) from exc
 
         video_profile = self._profile.get_stream(rs.stream.color).as_video_stream_profile()
+        # COLOUR intrinsics, read once: RTMO pixels are colour pixels and the
+        # depth is aligned to colour, so these (not the depth sensor's) are the
+        # ones that deproject (u, v, Z) correctly.
         self.color_intrinsics = video_profile.get_intrinsics()
+        self.camera_intrinsics = CameraIntrinsics(
+            fx=float(self.color_intrinsics.fx),
+            fy=float(self.color_intrinsics.fy),
+            cx=float(self.color_intrinsics.ppx),
+            cy=float(self.color_intrinsics.ppy),
+            width=int(self.color_intrinsics.width),
+            height=int(self.color_intrinsics.height),
+        )
         self._started = True
 
         if self.enable_depth:

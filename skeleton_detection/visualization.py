@@ -11,7 +11,10 @@ The functions here take duck-typed "person" objects: anything exposing
 ``joints`` (51 floats, [x, y, conf] * 17) works.  ``PersonSkeleton`` messages
 satisfy that, so no ROS message import is needed here.  ``depth`` (float,
 meters, NaN = unavailable) is read when present and rendered as
-``Depth: N/A`` when it is missing or NaN.
+``Depth: N/A`` when it is missing or NaN.  It is the EUCLIDEAN
+camera-to-person distance ``sqrt(X^2+Y^2+Z^2)``, not the RealSense Z-depth.
+With ``draw_position_xyz`` the camera-frame ``position`` is appended too
+(debug only).
 
 ``person_id`` is drawn as-is.  When tracking is enabled it is a persistent
 BoT-SORT track id; when tracking is off it is the frame-local detection index.
@@ -77,6 +80,16 @@ def _connection_color(index_a: int, index_b: int) -> Tuple[int, int, int]:
     return color_a if color_a == color_b else COLOR_CENTER
 
 
+def _format_position(position) -> str:
+    """``(+x, +y, z) m`` for a camera-frame point, or ``N/A``."""
+    if position is None:
+        return "N/A"
+    values = [float(position.x), float(position.y), float(position.z)]
+    if not all(np.isfinite(values)):
+        return "N/A"
+    return f"({values[0]:+.2f}, {values[1]:+.2f}, {values[2]:.2f}) m"
+
+
 def _scaled_metrics(image_height: int) -> Tuple[int, int, float]:
     """Line thickness, joint radius and font scale for this image size."""
     thickness = max(1, int(round(image_height / 300.0)))
@@ -134,13 +147,15 @@ def draw_skeleton_overlay(
     draw_joint_scores: bool = False,
     title: Optional[str] = None,
     legend: Optional[str] = DEFAULT_LEGEND,
+    draw_position_xyz: bool = False,
 ) -> np.ndarray:
     """Return a copy of ``image_bgr`` with the detections drawn on top.
 
     Args:
         image_bgr: the ORIGINAL source frame (BGR, unmodified resolution).
         persons: objects with ``person_id``/``score``/``bbox``/``joints``,
-            and optionally ``depth`` (meters; NaN or absent -> "N/A").
+            and optionally ``depth`` (Euclidean meters; NaN or absent ->
+            "N/A") and ``position`` (x/y/z meters, colour optical frame).
         joint_score_threshold: joints below this confidence are not drawn, and
             a connection is drawn only when BOTH endpoints are above it.
         draw_joint_scores: print each drawn joint's confidence next to it.
@@ -148,6 +163,8 @@ def draw_skeleton_overlay(
         title: optional one-line banner drawn at the top left (frame info).
         legend: optional one-line footer; defaults to the "not a tracking ID"
             reminder.  Pass ``None`` to omit.
+        draw_position_xyz: DEBUG: append the camera-frame ``XYZ`` to each
+            label. Off by default to keep the overlay uncluttered.
     """
     canvas = image_bgr.copy()
     height, width = canvas.shape[:2]
@@ -207,12 +224,15 @@ def draw_skeleton_overlay(
         # drop it just inside the top edge of the box instead so it always
         # stays visually attached to the right person.
         # getattr keeps the duck-typed contract: a person object without a
-        # depth field simply shows "N/A" instead of raising.
+        # depth field simply shows "N/A" instead of raising. depth is the
+        # Euclidean distance, not the RealSense Z.
         depth = float(getattr(person, "depth", NO_DEPTH))
         label = (
             f"ID {person.person_id}  score={float(person.score):.2f}"
             f" | Depth: {format_depth(depth)}"
         )
+        if draw_position_xyz:
+            label += f" | XYZ: {_format_position(getattr(person, 'position', None))}"
         _, label_height, label_baseline = _text_extent(
             label, font_scale, label_thickness
         )

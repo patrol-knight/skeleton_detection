@@ -81,11 +81,14 @@ Intel RealSense D456
         │                              │
         ▼                              ▼
  persistent track_id           person_depth module
-        │                       two-stage median
+        │                       two-stage median -> person Z
+        │                       + bbox centre (u, v)
+        │                       + colour intrinsics (fx, fy, cx, cy)
         │                              │
         └──────────────┬───────────────┘
                        ▼
-                person depth (m)
+     position (X, Y, Z) in colour optical frame (m)
+     depth = sqrt(X² + Y² + Z²) (m)
         │
         ▼
  SkeletonFrame ROS message
@@ -511,44 +514,71 @@ connections:
 19 COCO skeleton edges
 
 position:
-currently (0,0,0)
-full 3D deprojection is not implemented yet
+person's 3D point (x, y, z) in METERS in the colour camera
+OPTICAL frame (header.frame_id = camera_color_optical_frame)
+x = image right, y = image down, z = forward (optical axis)
+NaN on all axes = not available (never 0)
 
 depth:
-estimated distance of the person from the camera,
-in METERS
+EUCLIDEAN camera-to-person distance, sqrt(x² + y² + z²),
+in METERS — NOT the raw RealSense depth value (that is position.z)
 NaN = not available (never 0)
 ```
 
-### `depth` semantics
+### `position` and `depth` semantics
 
-`depth` is a single scalar per person, in meters, estimated from the RealSense
-depth image aligned to the colour frame. It is computed as a **two-stage
-median**:
+```text
+RealSense depth image value  = optical-axis Z coordinate
+published PersonSkeleton.depth = Euclidean distance = sqrt(X² + Y² + Z²)
+```
+
+These agree only near the image centre; towards the edge of the image the
+Euclidean distance is noticeably larger than Z.
+
+**Person Z** is estimated from the RealSense depth image aligned to the colour
+frame with a **two-stage median**:
 
 ```text
 for every VISIBLE keypoint (joint confidence >= depth_keypoint_score_threshold):
     3x3 depth neighbourhood around (u, v)
         drop zero / NaN / inf samples
-        median  ->  joint_depth
+        median  ->  joint Z
 
-drop keypoints with no valid joint_depth
+drop keypoints with no valid joint Z
 
-median of the remaining joint_depth values  ->  person.depth
+median of the remaining joint Z values  ->  person Z
 ```
 
 The median is used at both stages on purpose: depth around a person is
 bimodal (person surface vs. background), and a mean would place the person in
 the empty space between the two. It must not be replaced by a mean.
 
+**Position** places the person laterally at the centre of its bounding box
+(clipped to the image, since RTMO boxes are unclipped) and deprojects it with
+the COLOUR stream intrinsics, read once at camera start:
+
+```text
+(u, v) = centre of the clipped bbox, colour-image pixels
+X = (u - cx) * Z / fx
+Y = (v - cy) * Z / fy
+Z = person Z
+depth = sqrt(X² + Y² + Z²)
+```
+
+Colour intrinsics are the right ones because the keypoints/bbox are colour
+pixels and the aligned depth values are Z in the colour camera. Lens
+distortion is ignored (pinhole); the node logs the distortion model and
+coefficients at startup. The position is camera-frame only — no transform to
+`base_link`, `odom` or `map` is applied.
+
 If no visible keypoint yields a valid depth — no depth stream, the person is
-out of the depth range, or the depth is all holes — `depth` is `NaN`, never
-`0`. Consumers must test with `math.isnan()`; the visualization prints
-`Depth: N/A`.
+out of the depth range, or the depth is all holes — `position` and `depth` are
+`NaN`, never `0`. Consumers must test with `math.isnan()`; the visualization
+prints `Depth: N/A`.
 
 The implementation lives in `skeleton_detection/person_depth.py`, which is
 pure NumPy (no ROS, no pyrealsense2) and is covered by
-`test/test_person_depth.py`.
+`test/test_person_depth.py` and `test/test_person_position.py`.
 
 ### Depth-to-colour alignment
 
@@ -562,9 +592,9 @@ Z16 unit) is read once in `RealSenseCapture.start()` and applied inside the
 depth module, so nothing is ever scaled twice.
 
 Depth is on by default and can be turned off with
-`realsense_enable_depth:=false`, in which case every `depth` is `NaN`. In
-`input_mode=ros_topic` there is no depth stream at all, so `depth` is always
-`NaN` on that path.
+`realsense_enable_depth:=false`, in which case every `position`/`depth` is
+`NaN`. In `input_mode=ros_topic` there is no depth stream and no intrinsics,
+so `position`/`depth` are always `NaN` on that path.
 
 ### `person_id` semantics
 
@@ -610,8 +640,15 @@ ID 7  score=0.91 | Depth: 3.24 m
 ID 8  score=0.84 | Depth: N/A
 ```
 
-`Depth: N/A` means the depth for that person is `NaN` (no depth stream, or no
-visible keypoint with a valid depth sample).
+`Depth` is the Euclidean camera-to-person distance `sqrt(X² + Y² + Z²)`, not
+the raw RealSense Z. `Depth: N/A` means the depth for that person is `NaN` (no
+depth stream, or no visible keypoint with a valid depth sample).
+
+For debugging, `draw_person_xyz:=true` appends the camera-frame position:
+
+```text
+ID 7  score=0.91 | Depth: 3.24 m | XYZ: (+0.85, -0.12, 3.12) m
+```
 
 The visualization topic is intended only for inspection, not as a machine-readable perception contract.
 
@@ -679,7 +716,8 @@ Use this to inspect:
 - bbox
 - joints
 - connections
-- `depth` (meters; `nan` when unavailable)
+- `position` (meters, colour optical frame; `nan` when unavailable)
+- `depth` (Euclidean meters; `nan` when unavailable)
 
 ---
 
@@ -1087,9 +1125,10 @@ the `model_config` / `checkpoint` ROS parameters (or the `RTMO_MODEL_CONFIG` /
 - ReID currently reduces pipeline throughput to roughly 38–40 FPS with people.
 - `tracking_frame_rate` is fixed when BoT-SORT is constructed and does not dynamically adapt to measured runtime FPS.
 - `cmc_method=none` assumes a static-camera baseline.
-- `position` is not yet populated with depth-derived XYZ; only the scalar
-  `depth` field is filled in.
-- No full 3D person localization (deprojection to XYZ) is implemented yet.
+- `position` is in the camera optical frame only; no TF transform to
+  `base_link`/`odom`/`map` is applied yet.
+- Deprojection is pinhole: colour lens distortion is ignored, and the lateral
+  position is the bbox centre rather than a body-specific anchor.
 - No TensorRT optimization is currently used.
 
 ---
@@ -1103,11 +1142,11 @@ tracked person
     ↓
 aligned RealSense depth          done
     ↓
-robust body anchor               done (two-stage median -> PersonSkeleton.depth)
+robust body anchor               done (two-stage median -> person Z)
     ↓
-3D deprojection                  next
-    ↓
-PersonSkeleton.position
+3D deprojection                  done (bbox centre + colour intrinsics
+    ↓                                  -> PersonSkeleton.position, depth)
+TF to robot / map frame          next
 ```
 
 The tracking ID will provide the persistent person identity to which future 3D location information can be attached.

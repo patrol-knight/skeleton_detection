@@ -17,8 +17,10 @@ rtmo_node:
     # Z16 depth at the same resolution/rate, ALIGNED TO COLOUR inside the
     # capture thread (rs.align(rs.stream.color)), so RTMO's colour-space
     # keypoints index it directly. Set false to run colour-only; then
-    # PersonSkeleton.depth is NaN for every person.
+    # PersonSkeleton.position and depth are NaN for every person.
     realsense_enable_depth: true
+    # PersonSkeleton.position is ALWAYS in the colour camera optical frame
+    # (x right, y down, z forward); this id must name that frame.
     camera_frame_id: camera_color_optical_frame
 
     # --- output ---
@@ -32,10 +34,13 @@ rtmo_node:
     device: cuda:0
     person_score_threshold: 0.3
 
-    # --- per-person depth (skeleton_detection/person_depth.py) ---
-    # PersonSkeleton.depth [m] = median over the visible keypoints of the
-    # median of each keypoint's 3x3 depth neighbourhood. NaN when no visible
-    # keypoint has a valid depth sample -- never 0.
+    # --- per-person 3D position (skeleton_detection/person_depth.py) ---
+    # person Z [m] = median over the visible keypoints of the median of each
+    # keypoint's 3x3 aligned-depth neighbourhood (optical-axis Z).
+    # PersonSkeleton.position = bbox centre (u, v) deprojected at person Z
+    # with the colour intrinsics: X=(u-cx)Z/fx, Y=(v-cy)Z/fy, Z.
+    # PersonSkeleton.depth = sqrt(X^2+Y^2+Z^2), the EUCLIDEAN distance (not Z).
+    # All NaN when no visible keypoint has a valid depth sample -- never 0.
     # A keypoint votes only at/above this RTMO per-JOINT confidence.
     depth_keypoint_score_threshold: 0.3
     # Optional metric sanity bounds; <= 0 disables that bound. Zero, NaN and
@@ -128,6 +133,8 @@ rtmo_node:
     # 'reliable' if a viewer subscribes with reliable QoS and sees nothing.
     visualization_reliability: best_effort
     draw_joint_scores: false
+    # DEBUG: append "XYZ: (x, y, z) m" (colour optical frame) to each label.
+    draw_person_xyz: false
     joint_score_threshold: 0.3
     # Offline artefact: writes a file for EVERY processed frame (not rate
     # limited). Keep false during live runs.

@@ -8,7 +8,8 @@ in focused modules::
                                          (depth aligned to colour lives here)
     rtmo_inference.RTMOInference         RTMO-M model + result parsing
     tracking.SkeletonTracker             BoT-SORT + OSNet ReID
-    person_depth                         aligned depth -> per-person depth [m]
+    person_depth                         aligned depth + colour intrinsics ->
+                                         per-person XYZ [m] (colour optical frame)
     message_builder                      internal -> ROS message conversion
     visualization                        drawing + the two visualization sinks
     pipeline_stats.PipelineStats         timing/throughput accounting
@@ -17,7 +18,8 @@ Per-frame order (tracking runs BEFORE messages are built, so person_id is
 already the persistent track id at publication time)::
 
     frame -> RTMO -> [PersonDetection] -> tracker.update() -> track_id attached
-          -> person_depth -> detection.depth [m]
+          -> person_depth -> detection.position (X, Y, Z) [m]
+                           (depth = sqrt(X^2+Y^2+Z^2), derived from it)
           -> SkeletonFrame -> /skeleton_detection/frame -> optional visualization
 
 Input modes (``input_mode`` parameter):
@@ -58,7 +60,12 @@ from std_msgs.msg import Header
 from skeleton_detection.msg import SkeletonFrame
 
 from .message_builder import build_skeleton_frame, person_id_semantics
-from .person_depth import NO_DEPTH, DepthParams, compute_person_depth
+from .person_depth import (
+    NO_POSITION,
+    CameraIntrinsics,
+    DepthParams,
+    compute_person_position,
+)
 from .pipeline_stats import PipelineStats
 from .realsense_capture import RealSenseCapture, RealSenseCaptureError
 from .rtmo_inference import PersonDetection, RTMOInference, RTMOInferenceError
@@ -106,6 +113,9 @@ class RTMONode(Node):
         self.frame_index = 0
         self.stats = PipelineStats()
         self.capture: Optional[RealSenseCapture] = None
+        # Colour-stream intrinsics, set once the camera is open. None (e.g. in
+        # ros_topic mode) means no 3D position can be computed.
+        self.camera_intrinsics: Optional[CameraIntrinsics] = None
         self.tracker: Optional[SkeletonTracker] = None
         self.visualization_writer: Optional[VisualizationWriter] = None
         self._worker: Optional[threading.Thread] = None
@@ -138,7 +148,7 @@ class RTMONode(Node):
         self.declare_parameter("realsense_color_format", "bgr8")
         self.declare_parameter("realsense_serial", "")
         # Depth stream, aligned to colour inside RealSenseCapture. Required for
-        # PersonSkeleton.depth; with it off every person's depth is NaN.
+        # PersonSkeleton.position/depth; with it off both are NaN.
         self.declare_parameter("realsense_enable_depth", True)
         self.declare_parameter("camera_frame_id", "camera_color_optical_frame")
         # --- outputs ---
@@ -210,6 +220,8 @@ class RTMONode(Node):
         self.declare_parameter("visualization_reliability", "best_effort")
         self.declare_parameter("joint_score_threshold", 0.3)
         self.declare_parameter("draw_joint_scores", False)
+        # DEBUG: append each person's camera-frame XYZ to the overlay label.
+        self.declare_parameter("draw_person_xyz", False)
         self.declare_parameter("save_visualization_images", False)
         self.declare_parameter("visualization_output_dir", DEFAULT_VISUALIZATION_DIR)
         self.declare_parameter("visualization_image_format", "jpg")
@@ -309,6 +321,7 @@ class RTMONode(Node):
             )
         self.joint_score_threshold = float(value("joint_score_threshold"))
         self.draw_joint_scores = bool(value("draw_joint_scores"))
+        self.draw_person_xyz = bool(value("draw_person_xyz"))
         self.save_visualization_images = bool(value("save_visualization_images"))
         self.visualization_output_dir = str(value("visualization_output_dir"))
         self.visualization_image_format = str(value("visualization_image_format"))
@@ -436,7 +449,7 @@ class RTMONode(Node):
             self.get_logger().info(
                 "Depth ENABLED: z16 aligned to colour in RealSenseCapture, "
                 f"depth_scale={self.capture.depth_scale:.6f} m/unit; "
-                "PersonSkeleton.depth = median of per-joint 3x3 medians over "
+                "person Z = median of per-joint 3x3 Z medians over "
                 "keypoints with score >= "
                 f"{self.depth_params.keypoint_score_threshold:.2f}"
                 + (
@@ -450,16 +463,30 @@ class RTMONode(Node):
         else:
             self.get_logger().warning(
                 "Depth DISABLED (realsense_enable_depth=false): "
-                "PersonSkeleton.depth is NaN for every person"
+                "PersonSkeleton.position and depth are NaN for every person"
             )
 
-        intrinsics = self.capture.color_intrinsics
+        # Read once by RealSenseCapture.start() from the ACTIVE colour stream.
+        self.camera_intrinsics = self.capture.camera_intrinsics
+        intrinsics = self.camera_intrinsics
+        raw = self.capture.color_intrinsics
         if intrinsics is not None:
+            coeffs = ", ".join(f"{c:.4f}" for c in getattr(raw, "coeffs", []))
             self.get_logger().info(
-                f"Colour intrinsics: fx={intrinsics.fx:.2f} fy={intrinsics.fy:.2f} "
-                f"ppx={intrinsics.ppx:.2f} ppy={intrinsics.ppy:.2f} "
-                f"(recorded for future 3D deprojection; the scalar depth field "
-                f"does not need them)"
+                f"Colour intrinsics ({intrinsics.width}x{intrinsics.height}): "
+                f"fx={intrinsics.fx:.2f} fy={intrinsics.fy:.2f} "
+                f"cx(ppx)={intrinsics.cx:.2f} cy(ppy)={intrinsics.cy:.2f} "
+                f"distortion={getattr(raw, 'model', 'unknown')} [{coeffs}] "
+                "(ignored: pinhole deprojection). "
+                "PersonSkeleton.position = bbox centre deprojected at person Z "
+                f"in '{self.camera_frame_id}' (x right, y down, z forward); "
+                "PersonSkeleton.depth = sqrt(x^2+y^2+z^2)"
+            )
+        if not self.camera_frame_id.endswith("color_optical_frame"):
+            self.get_logger().warning(
+                f"camera_frame_id='{self.camera_frame_id}', but "
+                "PersonSkeleton.position is always expressed in the COLOUR "
+                "camera optical frame; make sure this frame id names that frame"
             )
 
         self._worker = threading.Thread(
@@ -586,8 +613,8 @@ class RTMONode(Node):
             return
 
         try:
-            # ros_topic mode carries colour only, so depth stays unavailable
-            # (NaN) for every person on this path.
+            # ros_topic mode carries colour only (no depth, no intrinsics), so
+            # position and depth stay unavailable (NaN) on this path.
             self._process_frame(frame_bgr, msg.header, None)
         except NotImplementedError as exc:
             self.get_logger().fatal(
@@ -640,10 +667,10 @@ class RTMONode(Node):
             tracking_ms = (time.perf_counter() - start) * 1000.0
             active_tracks = self.tracker.active_tracks
 
-        # Depth is attached AFTER tracking and BEFORE the message is built, so
-        # person_id and depth in the published message describe the same
-        # detection. It never modifies boxes, ids or keypoints.
-        self._attach_person_depth(detections, depth_image)
+        # Position is attached AFTER tracking and BEFORE the message is built,
+        # so person_id and position/depth in the published message describe
+        # the same detection. It never modifies boxes, ids or keypoints.
+        self._attach_person_position(detections, depth_image)
 
         frame_msg = build_skeleton_frame(header, self.frame_index, detections)
         self.frame_publisher.publish(frame_msg)
@@ -674,26 +701,30 @@ class RTMONode(Node):
             )
         self.frame_index += 1
 
-    def _attach_person_depth(
+    def _attach_person_position(
         self, detections: List[PersonDetection], depth_image: Optional[np.ndarray]
     ) -> None:
-        """Fill ``detection.depth`` [m] for every detection in this frame.
+        """Fill ``detection.position`` [m, colour optical frame] per detection.
 
         Thin wrapper only: the estimation itself lives in
-        :mod:`skeleton_detection.person_depth`. With no depth image every
-        detection keeps the NaN default, which the message and the overlay both
-        render as "unavailable".
+        :mod:`skeleton_detection.person_depth`. ``detection.depth`` (the
+        Euclidean distance) is derived from the position, so it is never set
+        here. With no depth image or no intrinsics every detection gets the
+        all-NaN position, which the message and the overlay both render as
+        "unavailable".
         """
-        if depth_image is None:
+        if depth_image is None or self.camera_intrinsics is None:
             for detection in detections:
-                detection.depth = NO_DEPTH
+                detection.position = NO_POSITION
             return
 
         for detection in detections:
-            detection.depth = compute_person_depth(
+            detection.position = compute_person_position(
                 depth_image,
                 detection.keypoints_xy,
                 detection.keypoint_scores,
+                detection.bbox_xyxy,
+                self.camera_intrinsics,
                 self.depth_params,
             )
 
@@ -727,6 +758,7 @@ class RTMONode(Node):
             draw_joint_scores=self.draw_joint_scores,
             title=title,
             legend=self._legend,
+            draw_position_xyz=self.draw_person_xyz,
         )
 
         if due:

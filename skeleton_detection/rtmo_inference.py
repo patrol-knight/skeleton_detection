@@ -22,7 +22,7 @@ from typing import List, Optional
 import numpy as np
 
 from .coco_keypoints import COCO_KEYPOINT_NAMES, NUM_COCO_KEYPOINTS
-from .person_depth import NO_DEPTH
+from .person_depth import NO_POSITION, CameraPoint
 
 
 @dataclass
@@ -42,11 +42,15 @@ class PersonDetection:
         detection_index: position of this detection in the frame's list. This
             is what BoxMOT echoes back as ``det_ind``, and it is how a track is
             joined to the exact skeleton that produced it.
-        depth: estimated distance of the person from the camera in METERS,
-            filled in after inference by
-            :func:`skeleton_detection.person_depth.compute_person_depth`.
-            ``NaN`` means "not available" (no depth stream, or no visible
-            keypoint with a usable depth sample) and is the default.
+        position: the person's 3D point ``(x, y, z)`` in meters in the COLOUR
+            camera OPTICAL frame (x right, y down, z forward), filled in after
+            inference by
+            :func:`skeleton_detection.person_depth.compute_person_position`.
+            All-NaN (:data:`~skeleton_detection.person_depth.NO_POSITION`)
+            means "not available" and is the default.
+
+    ``depth`` is derived from ``position``, not stored separately: see
+    :attr:`depth`.
     """
 
     bbox_xyxy: np.ndarray
@@ -55,12 +59,21 @@ class PersonDetection:
     keypoint_scores: np.ndarray
     detection_index: int
     track_id: Optional[int] = None
-    depth: float = NO_DEPTH
+    position: CameraPoint = NO_POSITION
 
     @property
     def person_id(self) -> int:
         """Id to publish: the track id when tracked, else the frame-local index."""
         return self.track_id if self.track_id is not None else self.detection_index
+
+    @property
+    def depth(self) -> float:
+        """EUCLIDEAN camera-to-person distance [m], ``sqrt(x^2 + y^2 + z^2)``.
+
+        Not the RealSense Z-depth (that is ``position.z``). NaN when
+        ``position`` is unavailable.
+        """
+        return self.position.distance
 
 
 def install_checkpoint_loader_workaround() -> None:
