@@ -26,8 +26,8 @@ setup(
     extras_require={"test": ["pytest"]},
     entry_points={
         "console_scripts": [
-            "image_publisher = skeleton_detection.image_publisher:main",
-            "rtmo_node = skeleton_detection.rtmo_node:main",
+            "image_publisher = skeleton_detection.input.image_publisher:main",
+            "iot_node = skeleton_detection.iot_node:main",
         ],
     },
 )

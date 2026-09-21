@@ -4,7 +4,7 @@ Milestone 1 stand-in for a real camera: it lets the RTMO node be exercised
 end-to-end without RealSense streaming.  Each image is published on
 ``/dummy_camera/image_raw`` with a valid header (node clock stamp + optical
 frame id), which is exactly what the RealSense driver will publish later, so
-``rtmo_node`` does not need to change when this node is replaced.
+``iot_node`` does not need to change when this node is replaced.
 
 Image selection (first match wins):
   1. ``image_paths``  - list of files, published in the given order

@@ -97,9 +97,6 @@ class SkeletonTracker:
         # OCCLUSION-AWARE TRACKING -- see occlusion_tracking.py; delete with it.
         occlusion_aware_tracking: bool = False,
         occlusion_params: Optional[OcclusionParams] = None,
-        # TEMPORARY TRACKING DEBUG -- see tracking_debug.py; delete with it.
-        debug_enabled: bool = False,
-        debug_path: str = "",
     ) -> None:
         self.reid_checkpoint = reid_checkpoint
         self.device = device
@@ -122,16 +119,6 @@ class SkeletonTracker:
         # ----------------------------------------------------------------
 
         reid_model = self._build_reid() if self.with_reid else None
-
-        # TEMPORARY TRACKING DEBUG ---------------------------------------
-        # When off, a stock BotSort is constructed and nothing below runs, so
-        # the per-frame cost is exactly zero.
-        self.debug_writer = None
-        if debug_enabled:
-            from .tracking_debug import TrackingDebugWriter
-
-            self.debug_writer = TrackingDebugWriter(debug_path, logger=logger)
-        # ---------------------------------------------------------------
 
         try:
             from boxmot.trackers.botsort.botsort import BotSort
@@ -163,30 +150,13 @@ class SkeletonTracker:
             # stock BotSort and nothing from occlusion_tracking.py runs.
             base_cls = BotSort
             if self.occlusion_aware_tracking:
-                from .occlusion_tracking import (
-                    OcclusionDebugLogger,
-                    make_occlusion_aware_botsort,
-                )
+                from .occlusion_tracking import make_occlusion_aware_botsort
 
-                self.occlusion_logger = (
-                    OcclusionDebugLogger(self.debug_writer)
-                    if self.debug_writer is not None
-                    else None
-                )
                 base_cls = make_occlusion_aware_botsort(
                     BotSort, self.occlusion_params, self.occlusion_logger
                 )
 
-            if self.debug_writer is not None:
-                # TEMPORARY TRACKING DEBUG: a recording subclass, same math.
-                # Stacked ON TOP of the occlusion-aware class when both are on.
-                from .tracking_debug import build_instrumented_botsort
-
-                self.tracker = build_instrumented_botsort(
-                    self.debug_writer, base_cls=base_cls, **botsort_kwargs
-                )
-            else:
-                self.tracker = base_cls(**botsort_kwargs)
+            self.tracker = base_cls(**botsort_kwargs)
         except Exception as exc:  # noqa: BLE001
             raise TrackerInitError(f"Failed to construct BoT-SORT: {exc}") from exc
 
@@ -227,14 +197,6 @@ class SkeletonTracker:
             f"track_high_thresh={self.tracker.track_high_thresh:.2f}, "
             f"new_track_thresh={self.tracker.new_track_thresh:.2f}",
         )
-        if self.debug_writer is not None:
-            # TEMPORARY TRACKING DEBUG
-            self._log(
-                "warning",
-                "TEMPORARY tracking debug is ENABLED; new-track diagnostics "
-                f"are being written to {self.debug_writer.path} (truncated at "
-                "startup). Turn it off with tracking_debug_enabled:=false.",
-            )
         self.last_track_count = 0
 
     @property
@@ -377,11 +339,6 @@ class SkeletonTracker:
                 frame_index=frame_index,
                 timestamp=timestamp,
             )
-        if self.debug_writer is not None:
-            # TEMPORARY TRACKING DEBUG: only so the report can quote the node's
-            # own frame counter and wall-clock time. Read, never acted upon.
-            self.tracker.debug_frame_index = frame_index
-            self.tracker.debug_timestamp = timestamp
         tracks = np.asarray(self.tracker.update(dets, frame_bgr))
         self.last_track_count = int(tracks.shape[0]) if tracks.size else 0
 

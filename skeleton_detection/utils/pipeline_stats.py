@@ -9,8 +9,8 @@ Keeps the three per-frame costs separate on purpose::
 Merging tracking into inference would hide exactly the number this milestone
 exists to measure, so they are never summed into one field.
 
-Frame-drop accounting lives in :class:`~skeleton_detection.realsense_capture.
-CaptureStats`: a frame is *dropped* when a newer camera frame replaced it in
+Frame-drop accounting lives in
+:class:`~skeleton_detection.input.realsense_capture.CaptureStats`: a frame is *dropped* when a newer camera frame replaced it in
 the latest-frame-wins slot before the inference loop consumed it.
 """
 

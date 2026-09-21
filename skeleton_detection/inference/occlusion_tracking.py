@@ -63,7 +63,7 @@ Removing it
 -----------
 1. delete this file
 2. delete the ``OCCLUSION-AWARE TRACKING`` blocks in ``tracking.py``,
-   ``rtmo_node.py``, ``launch/milestone2_realsense_rtmo.launch.py`` and
+   ``iot_node.py``, ``launch/milestone2_realsense_rtmo.launch.py`` and
    ``config/rtmo_node_realsense.yaml``
 3. delete ``test/test_occlusion_tracking.py``
 """
@@ -267,10 +267,11 @@ SEPARATOR = "-" * 60
 class OcclusionDebugLogger:
     """Renders occlusion events into any object exposing ``write_block(text)``.
 
-    In this package that object is ``tracking_debug.TrackingDebugWriter``, so
-    occlusion events and new-track events land in one file on one timeline.
-    The dependency is one duck-typed method, so deleting ``tracking_debug.py``
-    does not break occlusion-aware tracking -- it only removes its log.
+    No writer is currently supplied: the temporary new-track instrumentation
+    that used to provide one has been removed, so ``SkeletonTracker`` passes
+    ``None`` and no occlusion log is written. The dependency is one duck-typed
+    method, so any object exposing ``write_block`` can be wired back in without
+    touching the classification logic.
     """
 
     def __init__(self, writer) -> None:
@@ -414,8 +415,7 @@ def make_occlusion_aware_botsort(
     """Build a ``base_cls`` subclass whose STracks protect their own state.
 
     ``base_cls`` is normally ``boxmot.trackers.botsort.botsort.BotSort``. The
-    returned class can itself be used as the base of another subclass (that is
-    how the temporary ``tracking_debug`` instrumentation stacks on top).
+    returned class can itself be used as the base of another subclass.
     """
     import boxmot.trackers.botsort.botsort as botsort_module
     from boxmot.trackers.botsort.basetrack import TrackState

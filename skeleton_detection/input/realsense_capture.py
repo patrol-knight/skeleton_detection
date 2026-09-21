@@ -37,7 +37,7 @@ keypoints are colour pixels, and indexing an unaligned depth frame with them
 would read the wrong part of the scene.  After ``rs.align`` the depth image has
 the colour frame's size and intrinsics, and ``depth[v, u]`` is the distance at
 colour pixel ``(u, v)`` -- which is exactly what
-:mod:`skeleton_detection.person_depth` assumes.
+:mod:`skeleton_detection.inference.depth_estimation` assumes.
 
 The array is carried in :class:`CapturedFrame` in RAW Z16 units; the metric
 conversion uses :attr:`RealSenseCapture.depth_scale` (meters per unit) and is
@@ -57,7 +57,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from .person_depth import CameraIntrinsics
+from ..inference.depth_estimation import CameraIntrinsics
 
 
 @dataclass
@@ -165,7 +165,7 @@ class RealSenseCapture:
         self.device_info: Dict[str, str] = {}
         # Raw rs.intrinsics of the ACTIVE colour stream (kept for its
         # distortion model/coeffs), and the same numbers as a pyrealsense2-free
-        # CameraIntrinsics for person_depth. Both None until start().
+        # CameraIntrinsics for depth_estimation. Both None until start().
         self.color_intrinsics = None
         self.camera_intrinsics: Optional[CameraIntrinsics] = None
         # Meters per raw Z16 unit, read from the device once the pipeline is

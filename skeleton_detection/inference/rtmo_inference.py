@@ -10,7 +10,7 @@ Everything here stays in **xyxy**, in the ORIGINAL source image coordinate
 system.  MMPose's bottom-up estimator already maps its predictions out of the
 padded 640x640 model input back into image space, and BoT-SORT also wants
 xyxy, so no conversion happens until
-:mod:`skeleton_detection.message_builder` turns the detection into a ROS
+:mod:`skeleton_detection.output.message_builder` turns the detection into a ROS
 message (where the published convention is ``[x, y, width, height]``).
 """
 
@@ -21,8 +21,8 @@ from typing import List, Optional
 
 import numpy as np
 
-from .coco_keypoints import COCO_KEYPOINT_NAMES, NUM_COCO_KEYPOINTS
-from .person_depth import NO_POSITION, CameraPoint
+from ..utils.coco_keypoints import COCO_KEYPOINT_NAMES, NUM_COCO_KEYPOINTS
+from .depth_estimation import NO_POSITION, CameraPoint
 
 
 @dataclass
@@ -36,7 +36,8 @@ class PersonDetection:
         keypoints_xy: ``(17, 2)`` float32 COCO keypoints in image pixels.
         keypoint_scores: ``(17,)`` float32 per-joint confidence.
         track_id: persistent BoT-SORT id once
-            :class:`~skeleton_detection.tracking.SkeletonTracker` has run.
+            :class:`~skeleton_detection.inference.person_tracking.SkeletonTracker` has
+            run.
             ``None`` means "not tracked" -- either tracking is disabled, or the
             tracker did not return a track for this detection this frame.
         detection_index: position of this detection in the frame's list. This
@@ -45,8 +46,9 @@ class PersonDetection:
         position: the person's 3D point ``(x, y, z)`` in meters in the COLOUR
             camera OPTICAL frame (x right, y down, z forward), filled in after
             inference by
-            :func:`skeleton_detection.person_depth.compute_person_position`.
-            All-NaN (:data:`~skeleton_detection.person_depth.NO_POSITION`)
+            :func:`skeleton_detection.inference.depth_estimation.compute_person_position`.
+            All-NaN
+            (:data:`~skeleton_detection.inference.depth_estimation.NO_POSITION`)
             means "not available" and is the default.
 
     ``depth`` is derived from ``position``, not stored separately: see

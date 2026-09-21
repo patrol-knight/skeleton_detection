@@ -14,8 +14,7 @@ Optional arguments (all forwarded as ROS parameters), e.g.:
 Occlusion-aware tracking (experimental, off by default):
 
     ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
-        enable_tracking:=true occlusion_aware_tracking:=true \
-        tracking_debug_enabled:=true
+        enable_tracking:=true occlusion_aware_tracking:=true
 """
 
 import os
@@ -122,21 +121,6 @@ def generate_launch_description() -> LaunchDescription:
             "debug log prints a bbox width ratio at all.",
         ),
         # ------------------------------------------------------------------
-        # TEMPORARY TRACKING DEBUG (delete with tracking_debug.py) ---------
-        DeclareLaunchArgument(
-            "tracking_debug_enabled",
-            default_value="false",
-            description="TEMPORARY: log why BoT-SORT created each NEW track id "
-            "to tracking_debug_path. Off = stock BoxMOT, zero overhead.",
-        ),
-        DeclareLaunchArgument(
-            "tracking_debug_path",
-            default_value="/ros2_ws/src/skeleton_detection/output/"
-            "tracking_debug.log",
-            description="TEMPORARY: new-track diagnostics file. Truncated on "
-            "every node launch.",
-        ),
-        # ------------------------------------------------------------------
         DeclareLaunchArgument(
             "publish_visualization_image",
             default_value="false",
@@ -203,9 +187,6 @@ def generate_launch_description() -> LaunchDescription:
         "visible_ratio_threshold": LaunchConfiguration("visible_ratio_threshold"),
         "normal_bbox_history_size": LaunchConfiguration("normal_bbox_history_size"),
         "min_normal_width_samples": LaunchConfiguration("min_normal_width_samples"),
-        # TEMPORARY TRACKING DEBUG
-        "tracking_debug_enabled": LaunchConfiguration("tracking_debug_enabled"),
-        "tracking_debug_path": LaunchConfiguration("tracking_debug_path"),
         "publish_visualization_image": LaunchConfiguration(
             "publish_visualization_image"
         ),
@@ -220,7 +201,7 @@ def generate_launch_description() -> LaunchDescription:
 
     rtmo_node = Node(
         package="skeleton_detection",
-        executable="rtmo_node",
+        executable="iot_node",
         name="rtmo_node",
         output="screen",
         emulate_tty=True,

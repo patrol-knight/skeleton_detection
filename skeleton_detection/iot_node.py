@@ -4,21 +4,21 @@ One node, one process. This module wires the components together and owns the
 ROS surface (parameters, publishers, threads, lifecycle); the actual work lives
 in focused modules::
 
-    realsense_capture.RealSenseCapture   camera + latest-frame-wins buffer
+    input.realsense_capture.RealSenseCapture  camera + latest-frame-wins buffer
                                          (depth aligned to colour lives here)
-    rtmo_inference.RTMOInference         RTMO-M model + result parsing
-    tracking.SkeletonTracker             BoT-SORT + OSNet ReID
-    person_depth                         aligned depth + colour intrinsics ->
+    inference.rtmo_inference.RTMOInference   RTMO-M model + result parsing
+    inference.person_tracking.SkeletonTracker  BoT-SORT + OSNet ReID
+    inference.depth_estimation           aligned depth + colour intrinsics ->
                                          per-person XYZ [m] (colour optical frame)
-    message_builder                      internal -> ROS message conversion
-    visualization                        drawing + the two visualization sinks
-    pipeline_stats.PipelineStats         timing/throughput accounting
+    output.message_builder               internal -> ROS message conversion
+    output.visualization                 drawing + the two visualization sinks
+    utils.pipeline_stats.PipelineStats   timing/throughput accounting
 
 Per-frame order (tracking runs BEFORE messages are built, so person_id is
 already the persistent track id at publication time)::
 
     frame -> RTMO -> [PersonDetection] -> tracker.update() -> track_id attached
-          -> person_depth -> detection.position (X, Y, Z) [m]
+          -> depth_estimation -> detection.position (X, Y, Z) [m]
                            (depth = sqrt(X^2+Y^2+Z^2), derived from it)
           -> SkeletonFrame -> /skeleton_detection/frame -> optional visualization
 
@@ -59,19 +59,23 @@ from std_msgs.msg import Header
 
 from skeleton_detection.msg import SkeletonFrame
 
-from .message_builder import build_skeleton_frame, person_id_semantics
-from .person_depth import (
+from .output.message_builder import build_skeleton_frame, person_id_semantics
+from .inference.depth_estimation import (
     NO_POSITION,
     CameraIntrinsics,
     DepthParams,
     compute_person_position,
 )
-from .pipeline_stats import PipelineStats
-from .realsense_capture import RealSenseCapture, RealSenseCaptureError
-from .rtmo_inference import PersonDetection, RTMOInference, RTMOInferenceError
-from .occlusion_tracking import OcclusionParams
-from .tracking import DEFAULT_REID_CHECKPOINT, SkeletonTracker, TrackerInitError
-from .visualization import (
+from .utils.pipeline_stats import PipelineStats
+from .input.realsense_capture import RealSenseCapture, RealSenseCaptureError
+from .inference.rtmo_inference import PersonDetection, RTMOInference, RTMOInferenceError
+from .inference.occlusion_tracking import OcclusionParams
+from .inference.person_tracking import (
+    DEFAULT_REID_CHECKPOINT,
+    SkeletonTracker,
+    TrackerInitError,
+)
+from .output.visualization import (
     VisualizationWriter,
     draw_skeleton_overlay,
     joint_visibility_summary,
@@ -93,13 +97,6 @@ INPUT_MODE_REALSENSE = "realsense"
 # PROCESSED rate (~55 Hz), not the 60 Hz camera rate, because the capture
 # buffer is latest-frame-wins. Used when tracking_frame_rate <= 0.
 DEFAULT_TRACKING_FRAME_RATE = 55
-
-# TEMPORARY TRACKING DEBUG: default sink for the BoT-SORT new-track
-# diagnostics. output/ is already gitignored, so nothing lands in git.
-# Delete this constant together with tracking_debug.py.
-DEFAULT_TRACKING_DEBUG_PATH = (
-    "/ros2_ws/src/skeleton_detection/output/tracking_debug.log"
-)
 
 
 class RTMONode(Node):
@@ -158,7 +155,7 @@ class RTMONode(Node):
         self.declare_parameter("checkpoint", DEFAULT_CHECKPOINT)
         self.declare_parameter("device", "cuda:0")
         self.declare_parameter("person_score_threshold", 0.3)
-        # --- per-person depth (see skeleton_detection/person_depth.py) ---
+        # --- per-person depth (see inference/depth_estimation.py) ---
         # A keypoint votes on the person's depth only at/above this RTMO
         # per-joint confidence.
         self.declare_parameter("depth_keypoint_score_threshold", 0.3)
@@ -205,10 +202,6 @@ class RTMONode(Node):
         self.declare_parameter("normal_bbox_history_size", 15)
         self.declare_parameter("min_normal_width_samples", 5)
         # -------------------------------------------------------------------
-        # TEMPORARY TRACKING DEBUG: off by default, so normal runs are
-        # bit-identical to before. See skeleton_detection/tracking_debug.py.
-        self.declare_parameter("tracking_debug_enabled", False)
-        self.declare_parameter("tracking_debug_path", DEFAULT_TRACKING_DEBUG_PATH)
         # --- visualisation: human-facing only, off by default ---
         self.declare_parameter("publish_visualization_image", False)
         self.declare_parameter(
@@ -291,10 +284,6 @@ class RTMONode(Node):
                 f"{self.occlusion_params.min_normal_width_samples}"
             )
 
-        # TEMPORARY TRACKING DEBUG
-        self.tracking_debug_enabled = bool(value("tracking_debug_enabled"))
-        self.tracking_debug_path = str(value("tracking_debug_path"))
-
         cmc = str(value("cmc_method")).lower().strip()
         # BoxMOT's get_cmc_method() accepts None but raises on the string
         # "none"; map the friendly parameter value to the API's contract.
@@ -371,9 +360,6 @@ class RTMONode(Node):
                     # OCCLUSION-AWARE TRACKING
                     occlusion_aware_tracking=self.occlusion_aware_tracking,
                     occlusion_params=self.occlusion_params,
-                    # TEMPORARY TRACKING DEBUG
-                    debug_enabled=self.tracking_debug_enabled,
-                    debug_path=self.tracking_debug_path,
                 )
             except TrackerInitError as exc:
                 raise RuntimeError(f"Tracking could not start: {exc}") from exc
@@ -519,19 +505,6 @@ class RTMONode(Node):
                     "the ReID appearance state. Turn it off with "
                     "occlusion_aware_tracking:=false."
                 )
-            if self.tracking_debug_enabled:
-                # TEMPORARY TRACKING DEBUG: one line only. The detail goes to
-                # the debug file, never to the ROS log.
-                self.get_logger().warning(
-                    "TEMPORARY new-track debug instrumentation is ON; "
-                    f"writing to {self.tracking_debug_path}"
-                    + (
-                        " (occlusion NORMAL/OCCLUDED transitions go to the "
-                        "same file)"
-                        if self.occlusion_aware_tracking
-                        else ""
-                    )
-                )
         else:
             self.get_logger().info(
                 "Tracking disabled (enable_tracking=false); "
@@ -641,7 +614,7 @@ class RTMONode(Node):
         """RTMO -> tracking -> depth -> messages -> publish -> visualization.
 
         ``depth_image`` is the RAW Z16 frame ALREADY ALIGNED TO COLOUR by
-        :class:`~skeleton_detection.realsense_capture.RealSenseCapture`, or
+        :class:`~skeleton_detection.input.realsense_capture.RealSenseCapture`, or
         ``None`` when no depth stream is running.
         """
         total_start = time.perf_counter()
@@ -660,7 +633,8 @@ class RTMONode(Node):
             detections = self.tracker.update(
                 detections,
                 frame_bgr,
-                # TEMPORARY TRACKING DEBUG: quoted in the debug file only.
+                # OCCLUSION-AWARE TRACKING: carried into the per-frame
+                # visibility context. Read, never acted upon by the tracker.
                 frame_index=self.frame_index,
                 timestamp=time.time(),
             )
@@ -707,7 +681,7 @@ class RTMONode(Node):
         """Fill ``detection.position`` [m, colour optical frame] per detection.
 
         Thin wrapper only: the estimation itself lives in
-        :mod:`skeleton_detection.person_depth`. ``detection.depth`` (the
+        :mod:`skeleton_detection.inference.depth_estimation`. ``detection.depth`` (the
         Euclidean distance) is derived from the position, so it is never set
         here. With no depth image or no intrinsics every detection gets the
         all-NaN position, which the message and the overlay both render as

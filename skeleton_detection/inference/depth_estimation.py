@@ -1,7 +1,8 @@
 """Per-person depth and 3D camera-frame position from an aligned depth image.
 
 Pure numpy: this module knows nothing about ROS, about pyrealsense2 or about
-:class:`~skeleton_detection.rtmo_inference.PersonDetection`.  It takes a depth
+:class:`~skeleton_detection.inference.rtmo_inference.PersonDetection`.  It
+takes a depth
 image, one person's COCO keypoints and bounding box, and the colour camera
 intrinsics as plain numbers, which makes it trivially testable on synthetic
 arrays (see ``test/test_person_depth.py`` and ``test/test_person_position.py``).
@@ -12,7 +13,8 @@ Input contract
 system as the keypoints**.  The keypoints come from RTMO, which runs on the
 COLOUR frame, so the depth image must be ALIGNED TO COLOUR before it gets
 here.  That alignment is done once, in
-:mod:`skeleton_detection.realsense_capture` (``rs.align(rs.stream.color)`` in
+:mod:`skeleton_detection.input.realsense_capture` (``rs.align(rs.stream.color)``
+in
 the capture loop) -- never here, and never by indexing a raw depth frame with
 colour coordinates.
 

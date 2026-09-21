@@ -34,7 +34,7 @@ rtmo_node:
     device: cuda:0
     person_score_threshold: 0.3
 
-    # --- per-person 3D position (skeleton_detection/person_depth.py) ---
+    # --- per-person 3D position (inference/depth_estimation.py) ---
     # person Z [m] = median over the visible keypoints of the median of each
     # keypoint's 3x3 aligned-depth neighbourhood (optical-axis Z).
     # PersonSkeleton.position = bbox centre (u, v) deprojected at person Z
@@ -107,18 +107,6 @@ rtmo_node:
     # debug log. They classify nothing and change no tracker behaviour.
     normal_bbox_history_size: 15
     min_normal_width_samples: 5
-
-    # --- TEMPORARY TRACKING DEBUG (delete with tracking_debug.py) ---------
-    # Writes one human-readable block per NEWLY CREATED BoT-SORT id, with the
-    # raw IoU / raw pre-mask ReID / final cost / Hungarian assignment that
-    # explain why the detection did not re-attach to an existing track.
-    # OFF by default: with it off the tracker is stock BoxMOT and the overhead
-    # is zero. With occlusion_aware_tracking on, the SAME file also receives
-    # one block per OCCLUDED matched observation and one line per
-    # NORMAL <-> OCCLUDED transition. Enable with:
-    #   ros2 launch ... tracking_debug_enabled:=true
-    tracking_debug_enabled: false
-    tracking_debug_path: /ros2_ws/src/skeleton_detection/output/tracking_debug.log
 
     # --- visualisation: human-facing only, OFF by default for performance ---
     # Enable with: -p publish_visualization_image:=true

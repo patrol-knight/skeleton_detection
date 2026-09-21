@@ -37,7 +37,7 @@ def generate_launch_description() -> LaunchDescription:
 
     rtmo_node = Node(
         package="skeleton_detection",
-        executable="rtmo_node",
+        executable="iot_node",
         name="rtmo_node",
         output="screen",
         parameters=[LaunchConfiguration("rtmo_config")],

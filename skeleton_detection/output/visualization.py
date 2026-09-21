@@ -1,6 +1,6 @@
 """Shared skeleton drawing used by both the ROS debug topic and saved files.
 
-This is the single drawing implementation in the package.  ``rtmo_node`` calls
+This is the single drawing implementation in the package.  ``iot_node`` calls
 :func:`draw_skeleton_overlay` once per frame and then (a) publishes the result
 on ``/skeleton_detection/visualization_image`` (downscaled) and/or (b) writes
 it to disk at full resolution, so the file you open in VS Code and the live
@@ -30,12 +30,12 @@ from typing import List, Optional, Sequence, Tuple
 import cv2
 import numpy as np
 
-from .coco_keypoints import (
+from ..utils.coco_keypoints import (
     COCO_CONNECTIONS,
     COCO_KEYPOINT_NAMES,
     NUM_COCO_KEYPOINTS,
 )
-from .person_depth import NO_DEPTH, format_depth
+from ..inference.depth_estimation import NO_DEPTH, format_depth
 
 
 # BGR colours.

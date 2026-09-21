@@ -2,7 +2,7 @@ FROM ros:humble-ros-base
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-# ROS 2 and system dependencies
+# ROS 2 and system dependen     ies
 RUN apt-get update && apt-get install -y \
         python3-pip \
         python3-dev \

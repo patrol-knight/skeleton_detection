@@ -80,7 +80,7 @@ Intel RealSense D456
               └── crops people directly from the SAME BGR frame
         │                              │
         ▼                              ▼
- persistent track_id           person_depth module
+ persistent track_id           depth_estimation module
         │                       two-stage median -> person Z
         │                       + bbox centre (u, v)
         │                       + colour intrinsics (fx, fy, cx, cy)
@@ -111,32 +111,42 @@ There is **no ROS image topic between RealSense, RTMO, and BoT-SORT** in live Re
 
 ```text
 skeleton_detection/
-├── rtmo_node.py
-├── realsense_capture.py
-├── rtmo_inference.py
-├── tracking.py
-├── occlusion_tracking.py
-├── message_builder.py
-├── pipeline_stats.py
-├── visualization.py
-├── coco_keypoints.py
-└── image_publisher.py
+├── iot_node.py
+│
+├── input/
+│   ├── realsense_capture.py
+│   └── image_publisher.py
+│
+├── inference/
+│   ├── rtmo_inference.py
+│   ├── person_tracking.py
+│   ├── occlusion_tracking.py
+│   └── depth_estimation.py
+│
+├── output/
+│   ├── message_builder.py
+│   └── visualization.py
+│
+└── utils/
+    ├── pipeline_stats.py
+    └── coco_keypoints.py
 ```
 
 Main responsibilities:
 
 | File | Responsibility |
 |---|---|
-| `rtmo_node.py` | ROS parameters, publishers, threads, lifecycle, and high-level pipeline orchestration |
-| `realsense_capture.py` | D456 capture and latest-frame-wins buffering |
-| `rtmo_inference.py` | RTMO model loading, inference, and parsing |
-| `tracking.py` | BoT-SORT + OSNet ReID tracking |
-| `occlusion_tracking.py` | Experimental occlusion-aware Kalman/ReID state protection |
-| `message_builder.py` | Converts internal detections into ROS messages |
-| `pipeline_stats.py` | FPS and latency statistics |
-| `visualization.py` | Bounding box, skeleton, ID, score, and visualization rendering |
-| `coco_keypoints.py` | COCO-17 keypoint names and connections |
-| `image_publisher.py` | Offline/local-image test input |
+| `iot_node.py` | ROS parameters, publishers, threads, lifecycle, and high-level pipeline orchestration |
+| `input/realsense_capture.py` | D456 capture and latest-frame-wins buffering |
+| `input/image_publisher.py` | Offline/local-image test input |
+| `inference/rtmo_inference.py` | RTMO model loading, inference, and parsing |
+| `inference/person_tracking.py` | BoT-SORT + OSNet ReID tracking |
+| `inference/occlusion_tracking.py` | Experimental occlusion-aware Kalman/ReID state protection |
+| `inference/depth_estimation.py` | Per-person depth and camera-frame XYZ estimation |
+| `output/message_builder.py` | Converts internal detections into ROS messages |
+| `output/visualization.py` | Bounding box, skeleton, ID, score, and visualization rendering |
+| `utils/pipeline_stats.py` | FPS and latency statistics |
+| `utils/coco_keypoints.py` | COCO-17 keypoint names and connections |
 
 Model configs are version-controlled alongside the source:
 
@@ -271,7 +281,7 @@ With no camera attached, the model-loading half can still be checked on its own
 enough to prove the baked assets are correct:
 
 ```bash
-ros2 run skeleton_detection rtmo_node --ros-args -p input_mode:=realsense
+ros2 run skeleton_detection iot_node --ros-args -p input_mode:=realsense
 ```
 
 Confirm the topic is publishing from a second shell:
@@ -304,7 +314,7 @@ ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py
 Equivalent:
 
 ```bash
-ros2 run skeleton_detection rtmo_node --ros-args \
+ros2 run skeleton_detection iot_node --ros-args \
   -p input_mode:=realsense
 ```
 
@@ -576,7 +586,8 @@ out of the depth range, or the depth is all holes — `position` and `depth` are
 `NaN`, never `0`. Consumers must test with `math.isnan()`; the visualization
 prints `Depth: N/A`.
 
-The implementation lives in `skeleton_detection/person_depth.py`, which is
+The implementation lives in `skeleton_detection/inference/depth_estimation.py`,
+which is
 pure NumPy (no ROS, no pyrealsense2) and is covered by
 `test/test_person_depth.py` and `test/test_person_position.py`.
 
@@ -585,8 +596,9 @@ pure NumPy (no ROS, no pyrealsense2) and is covered by
 RTMO runs on the COLOUR image, so its keypoints are colour pixels. The raw
 depth frame lives in the depth sensor's own pixel grid, so it is passed
 through `rs.align(rs.stream.color)` in the capture thread
-(`skeleton_detection/realsense_capture.py`, `_capture_loop`) before the array
-is handed on. That is the single place alignment happens; `person_depth.py`
+(`skeleton_detection/input/realsense_capture.py`, `_capture_loop`) before the
+array
+is handed on. That is the single place alignment happens; `depth_estimation.py`
 assumes its input is already aligned. The device depth scale (meters per raw
 Z16 unit) is read once in `RealSenseCapture.start()` and applied inside the
 depth module, so nothing is ever scaled twice.
@@ -881,8 +893,7 @@ ON:
 
 ```bash
 ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
-  enable_tracking:=true occlusion_aware_tracking:=true \
-  tracking_debug_enabled:=true
+  enable_tracking:=true occlusion_aware_tracking:=true
 ```
 
 OFF (current behaviour):
@@ -892,38 +903,10 @@ ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
   enable_tracking:=true occlusion_aware_tracking:=false
 ```
 
-Implementation lives entirely in `skeleton_detection/occlusion_tracking.py`;
+Implementation lives entirely in
+`skeleton_detection/inference/occlusion_tracking.py`;
 nothing under `/usr/local/lib/python3.10/dist-packages/boxmot` is modified. See
 the "Removing it" section of that module.
-
-### TEMPORARY: new-track debug instrumentation
-
-| Parameter | Default | Description |
-|---|---:|---|
-| `tracking_debug_enabled` | `false` | Write one diagnostic block per newly created BoT-SORT id |
-| `tracking_debug_path` | `/ros2_ws/src/skeleton_detection/output/tracking_debug.log` | Debug file; truncated on every node launch |
-
-With `occlusion_aware_tracking:=true` the same file also receives one line per
-`NORMAL <-> OCCLUDED` transition and one block per `OCCLUDED` matched
-observation (plus the frame that returns to `NORMAL`), carrying the visible
-ratio, the width ratio, the reasons, whether the Kalman measurement update was
-skipped, whether ReID was frozen, and the preserved velocity. No embedding
-vectors are written.
-
-Off by default, in which case a stock `BotSort` is constructed and the overhead
-is zero. When on, each **newly allocated** persistent id (not an update, not a
-re-activation of a lost id) appends a human-readable section containing the raw
-IoU matrix, the raw pre-mask ReID distances, the masked cost matrix, the
-Hungarian assignment and which stage the detection fell through. Nothing extra
-goes to the ROS log.
-
-```bash
-ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
-  enable_tracking:=true tracking_debug_enabled:=true
-```
-
-This is throwaway diagnostic code: see the "Removing this instrumentation"
-section of `skeleton_detection/tracking_debug.py`.
 
 For the current static-camera setup:
 
@@ -956,7 +939,7 @@ For a moving/robot-mounted camera, camera-motion compensation should be re-evalu
 Example custom visualization:
 
 ```bash
-ros2 run skeleton_detection rtmo_node --ros-args \
+ros2 run skeleton_detection iot_node --ros-args \
   -p input_mode:=realsense \
   -p publish_visualization_image:=true \
   -p visualization_width:=640 \

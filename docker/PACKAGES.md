@@ -110,7 +110,7 @@ Measured raw capture rate: **59.8 FPS**.
 external detector, which is what we need for RTMO. It is a pure-Python wheel
 (`py3-none-any`), so aarch64 is not an issue for boxmot itself.
 
-**Tracking is not wired into the ROS node yet.** `rtmo_node.py` does not import
+**Tracking is not wired into the ROS node yet.** `iot_node.py` does not import
 boxmot, `person_id` is still a frame-local detection index, and no ReID runs at
 runtime. This section documents the environment that the future
 `skeleton_detection/tracking.py` will build on.

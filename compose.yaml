@@ -1,0 +1,73 @@
+# Development/runtime container for the skeleton_detection ROS 2 package.
+#
+# This reproduces the `docker run` invocation documented in README.md
+# ("2. Start the Docker container") exactly -- it is a transcription of the
+# working setup, not a new environment. The container starts idle; you enter it
+# and build/launch ROS by hand:
+#
+#   docker compose up -d
+#   docker compose exec skeleton_humble bash
+#
+services:
+  skeleton_humble:
+    # Same image tag the README builds by hand (`docker build -t
+    # skeleton_humble_dev .`), so `docker compose build` and the documented
+    # manual build produce the same tag and share the same layer cache.
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: skeleton_humble_dev
+
+    # Keeps `docker exec -it skeleton_humble bash` and every README command
+    # that names the container working unchanged.
+    container_name: skeleton_humble
+
+    # Idle process, exactly as in the README's `docker run ... sleep infinity`.
+    # The perception pipeline is NOT started automatically: `compose up` only
+    # brings up the environment, you launch ROS yourself inside it.
+    command: sleep infinity
+
+    # Matches the Dockerfile's WORKDIR and the colcon workspace root.
+    working_dir: /ros2_ws
+
+    # --- RealSense D456 access -----------------------------------------
+    # The camera is opened in-process with pyrealsense2, which needs raw USB
+    # access. The working setup grants it with --privileged plus a /dev bind
+    # mount (see volumes below) rather than enumerating device nodes: a
+    # RealSense re-enumerates to a new /dev/bus/usb path on replug, so a fixed
+    # `devices:` mapping would break on every reconnect.
+    privileged: true
+
+    # --- ROS 2 / DDS ----------------------------------------------------
+    # Host networking so DDS discovery reaches tools running on the host
+    # (ros2 topic echo, rqt_image_view) without multicast translation, and
+    # host IPC so Fast DDS shared-memory transport works across the boundary.
+    network_mode: host
+    ipc: host
+
+    # --- GPU ------------------------------------------------------------
+    # Equivalent of `--gpus all`: RTMO-M and the OSNet ReID backbone both run
+    # on cuda:0. Requires the NVIDIA Container Toolkit on the host, which the
+    # current setup already relies on.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    volumes:
+      # Source only. Model weights live in the image at /opt/models (baked by
+      # docker/fetch_models.py), so editing Python on the host takes effect
+      # immediately with no image rebuild, and no checkpoints land on the host.
+      - .:/ros2_ws/src/skeleton_detection
+      # Raw device access for the RealSense USB node (see privileged above).
+      - /dev:/dev
+      # X11 socket for rqt_image_view / any GUI tool run inside the container.
+      - /tmp/.X11-unix:/tmp/.X11-unix
+
+    environment:
+      # The README passes the host's DISPLAY through; :1 is what the current
+      # container runs with, so that is the fallback when DISPLAY is unset.
+      DISPLAY: ${DISPLAY:-:1}

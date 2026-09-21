@@ -14,7 +14,8 @@ in exactly one place:
 * ``position``: the person's 3D point in METERS in the colour camera OPTICAL
   frame (``header.frame_id``, default ``camera_color_optical_frame``): x toward
   image right, y toward image down, z forward along the optical axis. Computed
-  by :func:`skeleton_detection.person_depth.compute_person_position` and
+  by :func:`skeleton_detection.inference.depth_estimation.compute_person_position`
+  and
   attached to the detection by the node. All NaN when unavailable.
 * ``depth``: the EUCLIDEAN camera-to-person distance in METERS,
   ``sqrt(x^2 + y^2 + z^2)`` of ``position``. This is NOT the RealSense depth
@@ -28,8 +29,8 @@ from std_msgs.msg import Header
 
 from skeleton_detection.msg import PersonSkeleton, SkeletonFrame
 
-from .coco_keypoints import COCO_CONNECTIONS_FLAT, NUM_COCO_KEYPOINTS
-from .rtmo_inference import PersonDetection
+from ..utils.coco_keypoints import COCO_CONNECTIONS_FLAT, NUM_COCO_KEYPOINTS
+from ..inference.rtmo_inference import PersonDetection
 
 
 def person_id_semantics(tracking_enabled: bool) -> str:
@@ -55,8 +56,8 @@ def build_person_skeleton(detection: PersonDetection) -> PersonSkeleton:
     message.bbox = [x_min, y_min, x_max - x_min, y_max - y_min]
     message.joints = joints
     message.connections = list(COCO_CONNECTIONS_FLAT)
-    # Colour optical frame, meters; estimated upstream (rtmo_node ->
-    # person_depth). NaN on every axis = unavailable.
+    # Colour optical frame, meters; estimated upstream (iot_node ->
+    # depth_estimation). NaN on every axis = unavailable.
     position = detection.position
     message.position = Point(
         x=float(position.x), y=float(position.y), z=float(position.z)
