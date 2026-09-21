@@ -1,28 +1,36 @@
 # Development/runtime container for the skeleton_detection ROS 2 package.
 #
-# This reproduces the `docker run` invocation documented in README.md
-# ("2. Start the Docker container") exactly -- it is a transcription of the
-# working setup, not a new environment. The container starts idle; you enter it
-# and build/launch ROS by hand:
+# This reproduces the `docker run` invocation documented in docs/docker.md
+# exactly -- it is a transcription of the working setup, not a new
+# environment. The container starts idle; you enter it and build/launch ROS by
+# hand:
 #
 #   docker compose up -d
 #   docker compose exec skeleton_humble bash
 #
 services:
   skeleton_humble:
-    # Same image tag the README builds by hand (`docker build -t
-    # skeleton_humble_dev .`), so `docker compose build` and the documented
-    # manual build produce the same tag and share the same layer cache.
+    # Same image tag the manual build produces (`docker build -f
+    # docker/Dockerfile -t skeleton_humble_dev .`, see docs/docker.md), so
+    # `docker compose build` and the documented manual build produce the same
+    # tag and share the same layer cache.
+    #
+    # The context stays the REPOSITORY ROOT even though the Dockerfile now
+    # lives in docker/: the build COPYs docker/mmcv_ext_stub.py,
+    # models/rtmo/, docker/fetch_models.py and docker/verify_image.py, all of
+    # which are resolved relative to the context. Narrowing the context to
+    # docker/ would put models/ out of reach and change what .dockerignore
+    # filters.
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/Dockerfile
     image: skeleton_humble_dev
 
-    # Keeps `docker exec -it skeleton_humble bash` and every README command
-    # that names the container working unchanged.
+    # Keeps `docker exec -it skeleton_humble bash` and every documented
+    # command that names the container working unchanged.
     container_name: skeleton_humble
 
-    # Idle process, exactly as in the README's `docker run ... sleep infinity`.
+    # Idle process, exactly as in the documented `docker run ... sleep infinity`.
     # The perception pipeline is NOT started automatically: `compose up` only
     # brings up the environment, you launch ROS yourself inside it.
     command: sleep infinity
@@ -68,6 +76,7 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix
 
     environment:
-      # The README passes the host's DISPLAY through; :1 is what the current
-      # container runs with, so that is the fallback when DISPLAY is unset.
+      # The documented `docker run` passes the host's DISPLAY through; :1 is
+      # what the current container runs with, so that is the fallback when
+      # DISPLAY is unset.
       DISPLAY: ${DISPLAY:-:1}
