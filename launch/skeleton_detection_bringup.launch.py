@@ -1,19 +1,19 @@
-"""Milestone 2: RealSense D456 -> RTMO-M -> SkeletonFrame, one process.
+"""Live bringup: RealSense D456 -> RTMO-M -> SkeletonFrame, one process.
 
 Starts ONLY the RTMO node. The camera is opened inside that same process with
 the RealSense SDK, so the RGB frame never passes through DDS before inference.
 Deliberately does NOT launch realsense2_camera.
 
-    ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py
+    ros2 launch skeleton_detection skeleton_detection_bringup.launch.py
 
 Optional arguments (all forwarded as ROS parameters), e.g.:
 
-    ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
+    ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
         enable_tracking:=true publish_visualization_image:=true
 
 Occlusion-aware tracking (experimental, off by default):
 
-    ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
+    ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
         enable_tracking:=true occlusion_aware_tracking:=true
 """
 

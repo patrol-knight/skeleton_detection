@@ -193,7 +193,7 @@ with `capture_fps`, `skeleton_fps`, `rtmo_ms`, `track_ms` and the
 summary on shutdown. Run a fixed benchmark:
 
 ```bash
-ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
   run_duration_sec:=30.0
 ```
 
@@ -229,7 +229,7 @@ Tracking is off. With `enable_tracking:=false`, `person_id` is the frame-local
 detection index by design. Turn tracking on:
 
 ```bash
-ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
   enable_tracking:=true
 ```
 

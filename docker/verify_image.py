@@ -76,7 +76,7 @@ try:
 except Exception as exc:  # noqa: BLE001
     check("pyrealsense2 import", False, str(exc))
 
-print("== BoxMOT (BoT-SORT + PyTorch ReID; not yet wired into the node) ==")
+print("== BoxMOT (BoT-SORT + PyTorch ReID) ==")
 try:
     from importlib.metadata import version
 

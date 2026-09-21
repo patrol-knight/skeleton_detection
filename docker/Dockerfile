@@ -93,7 +93,7 @@ RUN python3 -m pip install --no-cache-dir \
         "mmdet==3.3.0" \
         "mmpose==1.3.2"
 
-# RealSense Python bindings for direct in-process capture (Milestone 2).
+# RealSense Python bindings for direct in-process capture.
 # Version pinned to match the ros-humble-librealsense2 2.58.3 runtime already
 # installed above; PyPI ships a manylinux2014_aarch64 cp310 wheel, so nothing
 # is built from source. Needed because the RTMO node opens the D456 itself
@@ -102,11 +102,10 @@ RUN python3 -m pip install --no-cache-dir \
         -c /etc/pip-constraints.txt \
         "pyrealsense2==2.58.3.10794"
 
-# BoT-SORT + ReID tracking stack (dependency audit; not yet wired into the ROS
-# node). Pinned to 19.0.0 deliberately: it is the NEWEST BoxMOT release that
-# leaves numpy unconstrained. BoxMOT >= 20.0.0 requires numpy>=2.2, which would
-# force out the numpy 1.23.5 that chumpy, opencv-python 4.8 and the compiled
-# mmpose/xtcocotools wheels depend on.
+# BoT-SORT + ReID tracking stack. Pinned to 19.0.0 deliberately: it is the
+# NEWEST BoxMOT release that leaves numpy unconstrained. BoxMOT >= 20.0.0
+# requires numpy>=2.2, which would force out the numpy 1.23.5 that chumpy,
+# opencv-python 4.8 and the compiled mmpose/xtcocotools wheels depend on.
 # The constraints file is load-bearing here, not decorative: it keeps pip from
 # pulling numpy 2.x in through a transitive dependency, and makes a future
 # incompatible resolution fail loudly at build time instead of silently

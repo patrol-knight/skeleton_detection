@@ -1,7 +1,7 @@
 """Publish one or more local test images as sensor_msgs/msg/Image.
 
-Milestone 1 stand-in for a real camera: it lets the RTMO node be exercised
-end-to-end without RealSense streaming.  Each image is published on
+Offline image input: a stand-in for a real camera that lets the RTMO node be
+exercised end-to-end without RealSense streaming.  Each image is published on
 ``/dummy_camera/image_raw`` with a valid header (node clock stamp + optical
 frame id), which is exactly what the RealSense driver will publish later, so
 ``iot_node`` does not need to change when this node is replaced.

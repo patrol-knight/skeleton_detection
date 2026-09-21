@@ -6,7 +6,7 @@ Keeps the three per-frame costs separate on purpose::
     tracking_ms         BoT-SORT association (+ ReID embedding when enabled)
     total_processing_ms inference + tracking + message build + publish
 
-Merging tracking into inference would hide exactly the number this milestone
+Merging tracking into inference would hide exactly the number this module
 exists to measure, so they are never summed into one field.
 
 Frame-drop accounting lives in

@@ -1,4 +1,4 @@
-# Milestone 2: RealSense D456 captured directly inside the RTMO process.
+# Live RealSense pipeline: D456 captured directly inside the RTMO process.
 # No realsense2_camera node, no sensor_msgs/Image on the input path.
 rtmo_node:
   ros__parameters:

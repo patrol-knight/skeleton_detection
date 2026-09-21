@@ -1,6 +1,6 @@
 """Direct Intel RealSense capture, in-process, with a latest-frame-wins buffer.
 
-Milestone 2 exists because pushing 848x480@60 ``sensor_msgs/Image`` frames
+This module exists because pushing 848x480@60 ``sensor_msgs/Image`` frames
 (~1.2 MB each, ~70 MB/s) between two processes over Fast DDS is a bottleneck
 in this environment.  This module lets the RTMO node open the D456 itself with
 the RealSense SDK, so an RGB frame goes

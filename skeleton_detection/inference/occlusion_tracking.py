@@ -63,7 +63,7 @@ Removing it
 -----------
 1. delete this file
 2. delete the ``OCCLUSION-AWARE TRACKING`` blocks in ``tracking.py``,
-   ``iot_node.py``, ``launch/milestone2_realsense_rtmo.launch.py`` and
+   ``iot_node.py``, ``launch/skeleton_detection_bringup.launch.py`` and
    ``config/rtmo_node_realsense.yaml``
 3. delete ``test/test_occlusion_tracking.py``
 """

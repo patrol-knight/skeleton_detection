@@ -7,8 +7,7 @@ All names, types and defaults below are taken from the current source:
 - ROS parameter defaults — `skeleton_detection/iot_node.py`
   (`RTMONode._declare_parameters`) and
   `skeleton_detection/input/image_publisher.py`
-- Launch argument defaults — `launch/milestone2_realsense_rtmo.launch.py` and
-  `launch/milestone1.launch.py`
+- Launch argument defaults — `launch/skeleton_detection_bringup.launch.py`
 - Config-file values — `config/rtmo_node_realsense.yaml`,
   `config/rtmo_node.yaml`, `config/image_publisher.yaml`
 
@@ -21,7 +20,7 @@ All names, types and defaults below are taken from the current source:
    default.
 3. **Launch argument / `--ros-args -p`** — overrides both.
 
-`milestone2_realsense_rtmo.launch.py` loads
+`skeleton_detection_bringup.launch.py` loads
 `config/rtmo_node_realsense.yaml` for the full parameter set and then applies
 its launch arguments as overrides on top. A parameter that is **not** a launch
 argument is changed by editing the YAML or by running `ros2 run ... --ros-args
@@ -43,7 +42,7 @@ every other parameter whose default below is written with a decimal point —
 
 | Parameter | Type | Node default | Launch arg? | Description |
 |---|---|---|---|---|
-| `input_mode` | string | `ros_topic` | forced to `realsense` by the milestone 2 launch file | `realsense` = open the D456 in this process; `ros_topic` = consume `sensor_msgs/Image` |
+| `input_mode` | string | `ros_topic` | forced to `realsense` by the bringup launch file | `realsense` = open the D456 in this process; `ros_topic` = consume `sensor_msgs/Image` |
 | `input_topic` | string | `/dummy_camera/image_raw` | no (config only) | input topic in `ros_topic` mode |
 
 `config/rtmo_node_realsense.yaml` sets `input_mode: realsense`;
@@ -206,15 +205,15 @@ Supported suffixes: `.jpg`, `.jpeg`, `.png`, `.bmp`.
 
 | Launch file | Argument | Default | Description |
 |---|---|---|---|
-| `milestone2_realsense_rtmo.launch.py` | `config` | `<share>/config/rtmo_node_realsense.yaml` | parameter file for `rtmo_node` in realsense mode |
-| `milestone1.launch.py` | `rtmo_config` | `<share>/config/rtmo_node.yaml` | parameter file for `rtmo_node` |
-| `milestone1.launch.py` | `image_publisher_config` | `<share>/config/image_publisher.yaml` | parameter file for `image_publisher_node` |
+| `skeleton_detection_bringup.launch.py` | `config` | `<share>/config/rtmo_node_realsense.yaml` | parameter file for `rtmo_node` in realsense mode |
 
 `<share>` is `get_package_share_directory("skeleton_detection")`.
 
-`milestone1.launch.py` declares no other arguments: everything else comes from
-the two YAML files. It also starts the image publisher inside a `TimerAction`
-with a fixed `period=5.0`, which is hard-coded, not configurable.
+`skeleton_detection_bringup.launch.py` is the only launch file in the package.
+The offline image path has no launch file: both nodes are started with
+`ros2 run` and a `--params-file`, so the YAML files are passed directly rather
+than through a launch argument. See
+[Running the pipeline](running.md#5-offline--image-pipeline).
 
 ---
 

@@ -43,8 +43,7 @@ source /ros2_ws/install/setup.bash
 | Main executable | `iot_node` |
 | Internal ROS node name | `rtmo_node` |
 | Offline image publisher executable | `image_publisher` |
-| Live RealSense launch file | `milestone2_realsense_rtmo.launch.py` |
-| Offline image launch file | `milestone1.launch.py` |
+| Live bringup launch file | `skeleton_detection_bringup.launch.py` |
 
 The executable is `iot_node`; the node it starts still calls itself
 `rtmo_node`, which is the name `ros2 node list`, `ros2 node info` and the YAML
@@ -57,7 +56,7 @@ parameter files all use.
 ### Verify the node starts
 
 ```bash
-ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
   run_duration_sec:=30.0
 ```
 
@@ -84,7 +83,7 @@ ros2 run skeleton_detection iot_node --ros-args -p input_mode:=realsense
 ### RTMO only (tracking off — maximum throughput)
 
 ```bash
-ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py
 ```
 
 Equivalent, without the launch file:
@@ -98,7 +97,7 @@ ros2 run skeleton_detection iot_node --ros-args -p input_mode:=realsense
 ### RTMO + BoT-SORT, no ReID
 
 ```bash
-ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
   enable_tracking:=true \
   with_reid:=false
 ```
@@ -108,7 +107,7 @@ Persistent track IDs from motion/IoU alone, with very little overhead.
 ### RTMO + BoT-SORT + OSNet ReID
 
 ```bash
-ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
   enable_tracking:=true \
   with_reid:=true
 ```
@@ -119,7 +118,7 @@ ID.
 ### Occlusion-aware tracking (experimental, off by default)
 
 ```bash
-ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
   enable_tracking:=true \
   occlusion_aware_tracking:=true
 ```
@@ -131,7 +130,7 @@ own it does nothing.
 ### Without depth
 
 ```bash
-ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
   realsense_enable_depth:=false
 ```
 
@@ -146,14 +145,14 @@ Visualization is **off by default**. It publishes
 424 × 240, 10 Hz, `best_effort` QoS.
 
 ```bash
-ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
   publish_visualization_image:=true
 ```
 
 Full tracking with visualization at 30 Hz:
 
 ```bash
-ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
   enable_tracking:=true \
   with_reid:=true \
   publish_visualization_image:=true \
@@ -178,7 +177,7 @@ ros2 run skeleton_detection iot_node --ros-args \
 Append each person's camera-frame XYZ to the overlay label (debug):
 
 ```bash
-ros2 launch skeleton_detection milestone2_realsense_rtmo.launch.py \
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
   publish_visualization_image:=true \
   draw_person_xyz:=true
 ```
@@ -215,37 +214,49 @@ inspection only — it is not a machine-readable perception contract.
 
 ## 5. Offline / image pipeline
 
-The local-image path needs no camera. It starts `rtmo_node` first and the
-`image_publisher` five seconds later, so the model is loaded and subscribed
-before the first image arrives.
+The local-image path needs no camera. It is run as **two `ros2 run` commands**,
+one per node — there is no launch file for it.
+
+There is no start-up ordering requirement. `image_publisher` waits up to
+`wait_for_subscriber_sec` (10.0 s by default) for a subscriber before it
+publishes the first image, so the two nodes can be started in either order and
+RTMO still has time to load its model.
+
+Use the shipped YAML files, which set `input_mode: ros_topic`, enable
+`save_visualization_images` and hold the image selection:
 
 ```bash
-ros2 launch skeleton_detection milestone1.launch.py
+# shell 1 — the perception node
+ros2 run skeleton_detection iot_node --ros-args \
+  --params-file /ros2_ws/install/skeleton_detection/share/skeleton_detection/config/rtmo_node.yaml
 ```
-
-Both nodes read the installed YAML files from
-`share/skeleton_detection/config` (`rtmo_node.yaml` and
-`image_publisher.yaml`), which set `input_mode: ros_topic`, enable
-`save_visualization_images` and hold the image selection. Override them on the
-command line:
 
 ```bash
-ros2 launch skeleton_detection milestone1.launch.py \
-  rtmo_config:=/path/to/rtmo_node.yaml \
-  image_publisher_config:=/path/to/image_publisher.yaml
+# shell 2 — the image source
+ros2 run skeleton_detection image_publisher --ros-args \
+  --params-file /ros2_ws/install/skeleton_detection/share/skeleton_detection/config/image_publisher.yaml
 ```
 
-Or run the two nodes by hand:
+No `-r __node:=` remap is needed: the nodes name themselves `rtmo_node` and
+`image_publisher_node`, which are exactly the keys the two YAML files use.
+
+To point at a different file, edit the YAML or override on the command line:
 
 ```bash
 ros2 run skeleton_detection iot_node --ros-args \
   -p input_mode:=ros_topic \
-  -p input_topic:=/dummy_camera/image_raw
+  -p input_topic:=/dummy_camera/image_raw \
+  -p save_visualization_images:=true
 
 # in a second shell
 ros2 run skeleton_detection image_publisher --ros-args \
   -p image_path:=/ros2_ws/src/skeleton_detection/data/images/000000000785.jpg
 ```
+
+`image_publisher` selects its input with the **first match wins** rule:
+`image_paths` (an explicit list), then `image_dir` (every supported image in a
+directory, sorted by name), then `image_path` (a single file). It exits on its
+own after the last image when `shutdown_after_publish` is true.
 
 Annotated images are written to
 `/ros2_ws/src/skeleton_detection/output/visualizations` (bind-mounted, so they

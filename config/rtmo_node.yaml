@@ -1,6 +1,6 @@
 rtmo_node:
   ros__parameters:
-    # Milestone 1 regression path: frames arrive on a ROS Image topic.
+    # Offline image regression path: frames arrive on a ROS Image topic.
     input_mode: ros_topic
     input_topic: /dummy_camera/image_raw
     output_topic: /skeleton_detection/frame
@@ -25,7 +25,7 @@ rtmo_node:
     # One log line per frame is useful when publishing a handful of images.
     log_every_frame: true
 
-    # --- offline visualisation (Milestone 1.5) ---
+    # --- offline visualisation ---
     joint_score_threshold: 0.3
     draw_joint_scores: false
     save_visualization_images: true
