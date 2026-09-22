@@ -7,8 +7,10 @@ docker compose up -d
 docker compose exec skeleton_humble bash
 ```
 
-See [Docker & Compose](docker.md) for the container itself, and
-[Parameters](parameters.md) for the full parameter reference.
+See [Docker & Compose](docker.md) for the container itself,
+[Launch arguments](launch_arguments.md) for everything settable on the
+`ros2 launch` command line, and [Parameters](parameters.md) for the full
+parameter reference.
 
 ---
 

@@ -107,6 +107,8 @@ RTMO config), `docker/` (Dockerfile and build helpers), `test/` (pytest suite).
   and device access, when a rebuild is needed
 - [Running the pipeline](docs/running.md) — `colcon build`, launch commands,
   visualization, topic inspection, message fields
+- [Launch arguments](docs/launch_arguments.md) — every `ros2 launch`
+  argument, its default and what it does
 - [Parameters](docs/parameters.md) — the complete parameter reference
 - [Architecture](docs/architecture.md) — module responsibilities, data flow,
   execution order, algorithms
@@ -133,7 +135,11 @@ cd /ros2_ws && colcon build --packages-select skeleton_detection
 source /ros2_ws/install/setup.bash
 
 ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
-  enable_tracking:=true run_duration_sec:=30.0
+  enable_tracking:=true \
+  with_reid:=true \
+  occlusion_aware_tracking:=true \
+  publish_visualization_image:=true \
+  draw_person_xyz:=true
 ```
 
 See [docs/docker.md](docs/docker.md) and [docs/running.md](docs/running.md) for

@@ -22,9 +22,11 @@ All names, types and defaults below are taken from the current source:
 
 `skeleton_detection_bringup.launch.py` loads
 `config/rtmo_node_realsense.yaml` for the full parameter set and then applies
-its launch arguments as overrides on top. A parameter that is **not** a launch
-argument is changed by editing the YAML or by running `ros2 run ... --ros-args
--p name:=value` directly.
+its launch arguments as overrides on top. The `Launch arg?` column below marks
+which parameters that covers; [Launch arguments](launch_arguments.md) collects
+the same 24 into one command-line-oriented page. A parameter that is **not**
+a launch argument is changed by editing the YAML or by running
+`ros2 run ... --ros-args -p name:=value` directly.
 
 ### Types matter
 
