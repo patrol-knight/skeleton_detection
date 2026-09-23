@@ -50,13 +50,22 @@ The `bgr8` colour profile matters: the RTMO config uses `mean=[0,0,0]`,
 `std=[1,1,1]` and no `bgr_to_rgb`, so the captured frame is handed to MMPose
 with **no per-frame colour conversion**. Measured raw capture rate: 59.8 FPS.
 
-The camera is opened **in-process** by the node with `pyrealsense2`. There is
-no `realsense2_camera` node on the input path. Raw USB access is what the
-`privileged: true` + `/dev:/dev` mount in `compose.yaml` provides.
+In the default `input_mode: realsense` the camera is opened **in-process** by
+the node with `pyrealsense2`, and no `realsense2_camera` node is involved. Raw
+USB access is what the `privileged: true` + `/dev:/dev` mount in
+`compose.yaml` provides.
 
-The pipeline also runs with no camera attached in `input_mode: ros_topic`
-(see the offline image workflow in [Running the pipeline](running.md)); in that
-mode `position` and `depth` are always `NaN`.
+Two other input modes need no camera on this host:
+
+- `input_mode: ros_topic` — the offline image workflow (see
+  [Running the pipeline](running.md)); `position` and `depth` are always `NaN`.
+- `input_mode: ros_camera` — consumes a `realsense2_camera_msgs/msg/RGBD`
+  topic from a `realsense2_camera` driver running **elsewhere** (typically
+  another container), which owns the camera, the alignment and the
+  synchronization. This package needs neither `pyrealsense2` nor USB access in
+  that mode, only the `realsense2_camera_msgs` message package and DDS
+  reachability to the driver. See
+  [Input modes](running.md#3-input-modes).
 
 ---
 

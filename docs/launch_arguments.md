@@ -4,7 +4,7 @@ Quick reference for `skeleton_detection_bringup.launch.py`, the only launch
 file in the package.
 
 This page lists **only what can be set on the `ros2 launch` command line**. The
-node declares 48 ROS parameters in total; the 24 below are the ones the launch
+node declares 49 ROS parameters in total; the 26 below are the ones the launch
 file exposes as arguments. For the other 24 — topic names, model paths,
 BoxMOT association thresholds, depth sanity bounds, logging — see the full
 [Parameter reference](parameters.md), which is the authoritative list.
@@ -21,9 +21,13 @@ name and default on this page.
 ros2 launch skeleton_detection skeleton_detection_bringup.launch.py
 ```
 
-With no arguments this runs the live RealSense path with **tracking off** and
-**visualization off** — RTMO detection, depth/XYZ and `SkeletonFrame`
-publication at maximum throughput.
+With no arguments this runs the live RealSense path (`input_mode:=realsense`)
+with **tracking off** and **visualization off** — RTMO detection, depth/XYZ and
+`SkeletonFrame` publication at maximum throughput.
+
+The launch file starts **only the skeleton-detection node**, in every input
+mode. It never launches `realsense2_camera`; in `ros_camera` mode that driver
+is expected to already be running elsewhere.
 
 Arguments are appended as `name:=value`:
 
@@ -53,18 +57,37 @@ an integer literal is rejected as the wrong parameter type. Pass
 The launch file loads `config/rtmo_node_realsense.yaml` for the full parameter
 set, then applies these arguments as **overrides on top of it**. So a launch
 argument always wins over the YAML, which in turn wins over the node default.
-`input_mode` is not an argument: the bringup file forces it to `realsense`.
+`input_mode` **is** an argument (default `realsense`), so the same config file
+backs all three modes: everything in it except the `realsense_*` block is
+input-independent.
 
 ---
 
+## Input
+
+| Argument | Default | Description |
+|---|---|---|
+| `input_mode` | `realsense` | Where frames come from: `realsense`, `ros_topic` or `ros_camera`. See [Input modes](running.md#3-input-modes). |
+| `rgbd_topic` | `/camera/camera/rgbd` | `input_mode:=ros_camera` only: the `realsense2_camera_msgs/msg/RGBD` topic of an **externally running** `realsense2_camera` driver. That one message carries colour, depth already aligned to colour, and the `CameraInfo`, which is why there are no separate `color_topic` / `depth_topic` / `camera_info_topic` arguments. Ignored in the other two modes. |
+
+| `input_mode` | What it reads | Depth / XYZ |
+|---|---|---|
+| `realsense` | the D456, opened in this process with `pyrealsense2` | yes, aligned in-process |
+| `ros_topic` | a colour-only `sensor_msgs/Image` topic (`input_topic`, offline testing) | no — `position`/`depth` are `NaN` |
+| `ros_camera` | one `RGBD` topic from an external `realsense2_camera` driver | yes, aligned **by the driver** |
+
 ## Camera
+
+Used by `input_mode:=realsense` only — in `ros_camera` mode the external
+driver owns the stream configuration, and in `ros_topic` mode there is no
+camera.
 
 | Argument | Default | Description |
 |---|---|---|
 | `realsense_width` | `848` | Colour width. Validated against the device's advertised profiles at start-up. |
 | `realsense_height` | `480` | Colour height. |
 | `realsense_fps` | `60` | Colour frame rate. |
-| `realsense_enable_depth` | `true` | Open the Z16 depth stream and align it to colour, so `PersonSkeleton.position` carries the person's XYZ in the colour optical frame and `depth` the Euclidean distance, in meters. `false` = colour only, `position`/`depth` published as `NaN`. |
+| `realsense_enable_depth` | `true` | Open the Z16 depth stream and align it to colour, so `PersonSkeleton.position` carries the person's XYZ in the colour optical frame and `depth` the Euclidean distance, in meters. `false` = colour only, `position`/`depth` published as `NaN`. **No effect in `ros_camera` mode** — the external driver decides whether depth exists; the node warns if you set it there. |
 
 An unsupported width/height/fps combination fails at start-up with the device's
 supported list rather than being silently substituted.
@@ -148,6 +171,20 @@ View the overlay from a second shell into the container:
 ```bash
 ros2 run rqt_image_view rqt_image_view \
   /skeleton_detection/visualization_image
+```
+
+The same, consuming an external `realsense2_camera` driver instead of opening
+the camera here:
+
+```bash
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
+  input_mode:=ros_camera \
+  rgbd_topic:=/camera/camera/rgbd \
+  enable_tracking:=true \
+  with_reid:=true \
+  publish_visualization_image:=true \
+  visualization_fps:=30.0 \
+  run_duration_sec:=60.0
 ```
 
 More task-oriented recipes — tracking without ReID, running without depth,

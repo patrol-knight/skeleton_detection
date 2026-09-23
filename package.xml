@@ -18,6 +18,11 @@
   <depend>ament_index_python</depend>
   <depend>geometry_msgs</depend>
   <depend>std_msgs</depend>
+  <!-- input_mode='ros_camera' subscribes to realsense2_camera_msgs/msg/RGBD
+       published by an EXTERNAL driver. The MESSAGE package only: this node
+       never launches realsense2_camera, so the driver itself is not a
+       dependency. exec_depend because nothing here is built against it. -->
+  <exec_depend>realsense2_camera_msgs</exec_depend>
   <exec_depend>rosidl_default_runtime</exec_depend>
 
   <member_of_group>rosidl_interface_packages</member_of_group>

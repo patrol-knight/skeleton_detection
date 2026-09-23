@@ -51,7 +51,8 @@ Dockerfile:
 | `ros-humble-vision-opencv` | 3.2.1-1jammy | metapackage carrying `cv_bridge` |
 | `ros-humble-sensor-msgs` | 4.9.2-1jammy | `sensor_msgs/Image`, on the visualization output and the offline input path |
 | `ros-humble-geometry-msgs` | 4.9.2-1jammy | `geometry_msgs/Point` — the `position` field of `PersonSkeleton.msg` |
-| `ros-humble-realsense2-camera` | 4.58.3-1jammy | **pulled in for its `librealsense2` dependency, not for the node.** The camera is opened in-process; no `realsense2_camera` node is ever launched |
+| `ros-humble-realsense2-camera` | 4.58.3-1jammy | **pulled in for its `librealsense2` dependency and for `realsense2_camera_msgs`, not for the node.** This package never launches a `realsense2_camera` node in any input mode |
+| `ros-humble-realsense2-camera-msgs` | 4.58.3-1jammy | pulled in by the above. Provides `realsense2_camera_msgs/msg/RGBD`, which `input_mode:=ros_camera` subscribes to. The MESSAGE package only — the driver itself runs externally |
 | `ros-humble-rqt-image-view` | 1.2.0-2jammy | viewing `/skeleton_detection/visualization_image` |
 | `ros-humble-rqt-gui` | 1.1.9-1jammy | rqt shell for the above |
 

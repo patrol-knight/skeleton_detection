@@ -1,10 +1,22 @@
 """Live bringup: RealSense D456 -> RTMO-M -> SkeletonFrame, one process.
 
-Starts ONLY the RTMO node. The camera is opened inside that same process with
-the RealSense SDK, so the RGB frame never passes through DDS before inference.
-Deliberately does NOT launch realsense2_camera.
+Starts ONLY the RTMO node -- in every input mode. This file NEVER launches
+realsense2_camera; in ``ros_camera`` mode that driver is expected to be
+running already, typically in another container.
+
+Default (``input_mode:=realsense``): the camera is opened inside this same
+process with the RealSense SDK, so the RGB frame never passes through DDS
+before inference.
 
     ros2 launch skeleton_detection skeleton_detection_bringup.launch.py
+
+Consume an EXTERNAL realsense2_camera driver's single RGBD topic instead:
+
+    ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
+        input_mode:=ros_camera
+
+    ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
+        input_mode:=ros_camera rgbd_topic:=/some/other/rgbd
 
 Optional arguments (all forwarded as ROS parameters), e.g.:
 
@@ -34,7 +46,26 @@ def generate_launch_description() -> LaunchDescription:
         DeclareLaunchArgument(
             "config",
             default_value=default_config,
-            description="Parameter file for rtmo_node in realsense mode.",
+            description="Parameter file for rtmo_node. The realsense one by "
+            "default; its non-input settings (model, tracking, "
+            "visualization) apply to every input_mode.",
+        ),
+        DeclareLaunchArgument(
+            "input_mode",
+            default_value="realsense",
+            description="Frame source: realsense (open the D456 in this "
+            "process with pyrealsense2), ros_topic (colour-only "
+            "sensor_msgs/Image, offline testing), or ros_camera (single "
+            "realsense2_camera_msgs/msg/RGBD topic from an EXTERNAL, already "
+            "running realsense2_camera driver).",
+        ),
+        DeclareLaunchArgument(
+            "rgbd_topic",
+            default_value="/camera/camera/rgbd",
+            description="input_mode=ros_camera only: RGBD topic of the "
+            "external realsense2_camera node. That one message carries "
+            "colour, depth ALREADY ALIGNED to colour and the CameraInfo, so "
+            "no separate colour/depth/camera_info topics are configured.",
         ),
         DeclareLaunchArgument(
             "realsense_width", default_value="848", description="Colour width."
@@ -167,8 +198,14 @@ def generate_launch_description() -> LaunchDescription:
 
     # The YAML file supplies the full parameter set; the launch arguments
     # override the few knobs worth changing from the command line.
+    #
+    # input_mode is an override like any other now. The default config file is
+    # still the realsense one: its non-input values (model, tracking,
+    # visualization) apply to every mode, and the realsense_* entries are
+    # simply unused by the other two.
     overrides = {
-        "input_mode": "realsense",
+        "input_mode": LaunchConfiguration("input_mode"),
+        "rgbd_topic": LaunchConfiguration("rgbd_topic"),
         "realsense_width": LaunchConfiguration("realsense_width"),
         "realsense_height": LaunchConfiguration("realsense_height"),
         "realsense_fps": LaunchConfiguration("realsense_fps"),

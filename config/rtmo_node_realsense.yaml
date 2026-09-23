@@ -1,8 +1,20 @@
 # Live RealSense pipeline: D456 captured directly inside the RTMO process.
 # No realsense2_camera node, no sensor_msgs/Image on the input path.
+#
+# The launch file applies input_mode as an OVERRIDE on top of this file, so
+# the same config also backs `input_mode:=ros_camera` (an external
+# realsense2_camera driver's RGBD topic). Everything below except the
+# realsense_* block is input-independent; the realsense_* values are simply
+# unused in the other modes.
 rtmo_node:
   ros__parameters:
+    # realsense | ros_topic | ros_camera
     input_mode: realsense
+    # input_mode: ros_camera only -- the single RGBD topic of an ALREADY
+    # RUNNING external realsense2_camera node. That message carries colour,
+    # depth already aligned to colour, and the CameraInfo, so this package
+    # does no synchronization and no alignment of its own.
+    rgbd_topic: /camera/camera/rgbd
 
     # --- camera (validated against the device's advertised profiles at
     # startup; an unsupported combination fails with the supported list

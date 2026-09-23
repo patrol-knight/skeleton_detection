@@ -12,9 +12,10 @@ tabulated in [Parameters](parameters.md).
 ## The single-process design
 
 The live perception path runs inside **one ROS node in one Python process**.
-The RealSense colour frame is handed from the capture thread through RTMO and
-into BoT-SORT **by reference** — it is never serialized, never copied between
-processes and never published on a ROS image topic before inference.
+In the default `input_mode: realsense` the RealSense colour frame is handed
+from the capture thread through RTMO and into BoT-SORT **by reference** — it is
+never serialized, never copied between processes and never published on a ROS
+image topic before inference.
 
 That is the whole point of the design: 848 × 480 @ 60 fps `sensor_msgs/Image`
 frames are ~1.2 MB each, ~70 MB/s, and pushing them between two processes over
@@ -22,6 +23,64 @@ Fast DDS is a bottleneck in this environment.
 
 **DDS starts only at the outputs**: `/skeleton_detection/frame` and, when
 enabled, `/skeleton_detection/visualization_image`.
+
+`input_mode: ros_camera` deliberately trades that property away: frames arrive
+over DDS from an external `realsense2_camera` driver, so the measured
+bottleneck above applies to it and throughput is expected to be lower than the
+direct path. It exists for deployments where the camera is owned by another
+container, not as a replacement for the default. `input_mode: ros_topic` is
+the offline/regression path and carries colour only.
+
+---
+
+## Input backends
+
+Three backends, one seam. `RTMONode._start_input` is the **only** place
+`input_mode` is branched on; each backend ends up calling
+`RTMONode._process_frame(frame_bgr, header, depth_image)`, so nothing
+downstream knows where a frame came from.
+
+| Mode | Module | Colour | Depth | Intrinsics |
+|---|---|---|---|---|
+| `realsense` | `input/realsense_capture.py` | `pyrealsense2`, capture thread, latest-frame-wins | Z16, `rs.align` in the capture loop | colour stream profile, read once at `start()` |
+| `ros_topic` | `iot_node._on_image` | `sensor_msgs/Image` + `CvBridge` | none → `NaN` | none → `NaN` |
+| `ros_camera` | `input/ros_camera_subscriber.py` | `RGBD.rgb` + `CvBridge` | `RGBD.depth`, aligned **by the driver** | `RGBD.rgb_camera_info.k`, read once from the first message |
+
+```text
+realsense  : D456 --pyrealsense2--> capture thread --rs.align--> |
+ros_topic  : /dummy_camera/image_raw --CvBridge--------------->  | _process_frame
+ros_camera : external realsense2_camera --RGBD--CvBridge----->   |
+```
+
+### `ros_camera` and the alignment contract
+
+`inference/depth_estimation.py` requires a depth image on the **colour** pixel
+grid, with **colour** intrinsics. In `realsense` mode this package earns that
+itself with `rs.align(rs.stream.color)`. In `ros_camera` mode the external
+driver earns it with `align_depth.enable:=true`, and `enable_sync:=true` pairs
+colour with depth upstream — so this package performs no alignment and no
+synchronization, and never calls `rs.align`.
+
+Because `realsense2_camera_msgs/msg/RGBD` carries colour, aligned depth and
+both `CameraInfo`s in **one** message, there is no `message_filters`
+synchronizer and no chance of a colour frame being matched to the wrong depth
+frame. That is the reason this mode subscribes to one RGBD topic rather than
+three independent topics.
+
+Two differences from the direct path are worth knowing:
+
+- **Depth scale comes from the encoding, not the device.** `16UC1` is
+  millimetres → `0.001`; `32FC1` is metres → `1.0`; anything else is refused
+  rather than guessed. The direct path instead reads `depth_scale` from the
+  depth sensor.
+- **QoS must be `best_effort`.** The driver publishes with sensor-data QoS; a
+  `reliable` subscription would never match it. The queue depth is `1`, which
+  reproduces the latest-frame-wins behaviour of the capture buffer by letting
+  DDS drop stale frames instead of queueing them.
+
+A driver started without `align_depth.enable` is caught **once**, at startup,
+by comparing the depth image size against the colour intrinsics — rather than
+raising once per person per frame inside the depth module.
 
 ---
 

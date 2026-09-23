@@ -6,6 +6,9 @@ in focused modules::
 
     input.realsense_capture.RealSenseCapture  camera + latest-frame-wins buffer
                                          (depth aligned to colour lives here)
+    input.ros_camera_subscriber          RGBD topic of an EXTERNAL
+                                         realsense2_camera driver -> the same
+                                         frame/depth/intrinsics triple
     inference.rtmo_inference.RTMOInference   RTMO-M model + result parsing
     inference.person_tracking.SkeletonTracker  BoT-SORT + OSNet ReID
     inference.depth_estimation           aligned depth + colour intrinsics ->
@@ -28,7 +31,15 @@ Input modes (``input_mode`` parameter):
 frame is handed to RTMO and then to BoT-SORT by reference. No RGB image ever
 crosses DDS on the input path.
 
-``ros_topic`` -- regression path: frames arrive on a sensor_msgs/Image topic.
+``ros_topic`` -- regression path: colour-only frames arrive on a
+sensor_msgs/Image topic (the offline image_publisher). No depth, no
+intrinsics, so position/depth stay NaN.
+
+``ros_camera`` -- an EXTERNAL realsense2_camera driver (another container) is
+already running and publishing realsense2_camera_msgs/msg/RGBD. That one
+message carries the colour image, the depth image ALREADY ALIGNED TO COLOUR
+and both CameraInfos, so this node does no synchronization and no alignment of
+its own. This node never launches the driver.
 
 Outputs::
 
@@ -68,6 +79,17 @@ from .inference.depth_estimation import (
 )
 from .utils.pipeline_stats import PipelineStats
 from .input.realsense_capture import RealSenseCapture, RealSenseCaptureError
+from .input.ros_camera_subscriber import (
+    DEFAULT_RGBD_TOPIC,
+    RGBDInputError,
+    depth_array_from_msg,
+    depth_scale_for_encoding,
+    import_rgbd_message,
+    intrinsics_from_camera_info,
+    rgbd_parts,
+    rgbd_qos,
+    validate_depth_alignment,
+)
 from .inference.rtmo_inference import PersonDetection, RTMOInference, RTMOInferenceError
 from .inference.occlusion_tracking import OcclusionParams
 from .inference.person_tracking import (
@@ -92,6 +114,8 @@ DEFAULT_CHECKPOINT = os.environ.get("RTMO_CHECKPOINT", "/opt/models/rtmo/rtmo-m.
 
 INPUT_MODE_ROS_TOPIC = "ros_topic"
 INPUT_MODE_REALSENSE = "realsense"
+INPUT_MODE_ROS_CAMERA = "ros_camera"
+INPUT_MODES = (INPUT_MODE_REALSENSE, INPUT_MODE_ROS_TOPIC, INPUT_MODE_ROS_CAMERA)
 
 # BoT-SORT scales its track buffer by frame_rate. The tracker sees the
 # PROCESSED rate (~55 Hz), not the 60 Hz camera rate, because the capture
@@ -110,6 +134,9 @@ class RTMONode(Node):
         self.frame_index = 0
         self.stats = PipelineStats()
         self.capture: Optional[RealSenseCapture] = None
+        # input_mode='ros_camera': intrinsics + depth scale are resolved from
+        # the first RGBD message, and only once.
+        self._rgbd_configured = False
         # Colour-stream intrinsics, set once the camera is open. None (e.g. in
         # ros_topic mode) means no 3D position can be computed.
         self.camera_intrinsics: Optional[CameraIntrinsics] = None
@@ -138,6 +165,11 @@ class RTMONode(Node):
         # --- input selection ---
         self.declare_parameter("input_mode", INPUT_MODE_ROS_TOPIC)
         self.declare_parameter("input_topic", "/dummy_camera/image_raw")
+        # --- external RealSense driver (input_mode='ros_camera') ---
+        # Single RGBD topic of an ALREADY RUNNING realsense2_camera node; it
+        # carries colour + aligned depth + CameraInfo together, which is why
+        # no separate colour/depth/camera_info topics are configurable here.
+        self.declare_parameter("rgbd_topic", DEFAULT_RGBD_TOPIC)
         # --- RealSense (input_mode='realsense') ---
         self.declare_parameter("realsense_width", 848)
         self.declare_parameter("realsense_height", 480)
@@ -228,13 +260,15 @@ class RTMONode(Node):
             return self.get_parameter(name).value
 
         self.input_mode = str(value("input_mode")).lower()
-        if self.input_mode not in (INPUT_MODE_ROS_TOPIC, INPUT_MODE_REALSENSE):
+        if self.input_mode not in INPUT_MODES:
+            supported = ", ".join(f"'{mode}'" for mode in INPUT_MODES)
             raise RuntimeError(
-                f"input_mode must be '{INPUT_MODE_ROS_TOPIC}' or "
-                f"'{INPUT_MODE_REALSENSE}', got '{self.input_mode}'"
+                f"input_mode must be one of {supported}, got "
+                f"'{self.input_mode}'"
             )
 
         self.input_topic = str(value("input_topic"))
+        self.rgbd_topic = str(value("rgbd_topic"))
         self.output_topic = str(value("output_topic"))
         self.camera_frame_id = str(value("camera_frame_id"))
         self.model_config = str(value("model_config"))
@@ -400,12 +434,21 @@ class RTMONode(Node):
             )
 
     def _start_input(self) -> None:
+        """Start exactly one of the three input backends.
+
+        The only place input_mode is branched on. Each backend ends up calling
+        the same :meth:`_process_frame` seam, so nothing downstream of here
+        knows where a frame came from.
+        """
         self.subscription = None
+        self.get_logger().info(f"Input mode: {self.input_mode}")
         if self.input_mode == INPUT_MODE_ROS_TOPIC:
             self.subscription = self.create_subscription(
                 Image, self.input_topic, self._on_image, 10
             )
             self.get_logger().info(f"Subscribed to {self.input_topic}")
+        elif self.input_mode == INPUT_MODE_ROS_CAMERA:
+            self._start_ros_camera()
         else:
             self._start_realsense()
 
@@ -486,6 +529,120 @@ class RTMONode(Node):
             "no realsense2_camera node, no image topic on the input path"
         )
 
+    def _start_ros_camera(self) -> None:
+        """Subscribe to the RGBD topic of an EXTERNAL realsense2_camera node.
+
+        Nothing is launched here and no camera is opened: the driver is assumed
+        to be already running in another container with ``enable_rgbd``,
+        ``enable_sync`` and ``align_depth.enable`` on. Because that one message
+        carries colour, ALIGNED depth and the colour CameraInfo together, this
+        node does no synchronization and no alignment of its own.
+
+        Intrinsics and the depth scale are not known until the first message
+        arrives, so they are resolved once in :meth:`_on_rgbd` rather than here.
+        """
+        rgbd_type = import_rgbd_message()
+
+        # Sensor-data QoS: a RELIABLE subscription would never match the
+        # driver's BEST_EFFORT publisher and would sit silent forever.
+        self._rgbd_configured = False
+        self.subscription = self.create_subscription(
+            rgbd_type, self.rgbd_topic, self._on_rgbd, rgbd_qos()
+        )
+
+        self.get_logger().info(f"RGBD topic: {self.rgbd_topic}")
+        self.get_logger().info(
+            "Consuming realsense2_camera_msgs/msg/RGBD from an EXTERNAL "
+            "realsense2_camera driver (not launched by this node); "
+            "QoS=best_effort/keep_last/depth=1. The driver owns colour, "
+            "depth, RGB/depth synchronization and depth-to-colour alignment"
+        )
+        if not self.realsense_enable_depth:
+            self.get_logger().warning(
+                "realsense_enable_depth=false has NO effect in "
+                f"input_mode='{INPUT_MODE_ROS_CAMERA}': whether depth exists "
+                "is decided by the external driver. Depth carried by the RGBD "
+                "message is used whenever it is present."
+            )
+
+    def _configure_from_rgbd(self, depth_msg, camera_info) -> None:
+        """One-time setup from the first RGBD message: intrinsics + depth scale.
+
+        Kept out of :meth:`_on_rgbd` so the per-frame path stays a straight
+        line, and so this runs exactly once no matter how fast frames arrive.
+        """
+        self.camera_intrinsics = intrinsics_from_camera_info(camera_info)
+        intrinsics = self.camera_intrinsics
+        self.get_logger().info(
+            f"Colour intrinsics from CameraInfo.k "
+            f"({intrinsics.width}x{intrinsics.height}): "
+            f"fx={intrinsics.fx:.2f} fy={intrinsics.fy:.2f} "
+            f"cx={intrinsics.cx:.2f} cy={intrinsics.cy:.2f} "
+            "(distortion ignored: pinhole deprojection). "
+            "PersonSkeleton.position = bbox centre deprojected at person Z "
+            "(x right, y down, z forward); "
+            "PersonSkeleton.depth = sqrt(x^2+y^2+z^2)"
+        )
+
+        # Catch a driver started without align_depth.enable ONCE, here,
+        # rather than once per person per frame inside the depth module.
+        validate_depth_alignment(depth_msg.width, depth_msg.height, intrinsics)
+
+        # The driver publishes aligned depth as 16UC1 millimetres, so the scale
+        # is a property of the ENCODING here, not something read from a device.
+        depth_scale = depth_scale_for_encoding(depth_msg.encoding)
+        self.depth_params = replace(self.depth_params, depth_scale=depth_scale)
+        self.get_logger().info(
+            f"Depth ENABLED: '{depth_msg.encoding}' already aligned to colour "
+            f"by the external driver, depth_scale={depth_scale:.6f} m/unit "
+            "(no rs.align in this process); person Z = median of per-joint "
+            "3x3 Z medians over keypoints with score >= "
+            f"{self.depth_params.keypoint_score_threshold:.2f}"
+        )
+
+    def _on_rgbd(self, msg) -> None:
+        """RGBD message -> (BGR frame, header, aligned depth) -> the pipeline.
+
+        No per-frame logging: this runs at the driver's frame rate.
+        """
+        try:
+            rgb_msg, depth_msg, camera_info = rgbd_parts(msg)
+
+            if not self._rgbd_configured:
+                self._configure_from_rgbd(depth_msg, camera_info)
+                self._rgbd_configured = True
+
+            frame_bgr = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding="bgr8")
+            depth_image = depth_array_from_msg(depth_msg, self.bridge)
+        except RGBDInputError as exc:
+            # A malformed/unusable stream is fatal: publishing skeletons with
+            # silently wrong depth would be worse than stopping.
+            self._fatal_error = f"RGBD input unusable: {exc}"
+            self.get_logger().fatal(self._fatal_error)
+            raise SystemExit from exc
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(f"RGBD conversion failed: {exc}")
+            return
+
+        # The driver's own stamp and optical frame are kept: they describe the
+        # real capture time and frame of this data. camera_frame_id is only a
+        # fallback for a driver that leaves frame_id empty.
+        header = rgb_msg.header
+        if not header.frame_id:
+            header.frame_id = self.camera_frame_id
+
+        try:
+            self._process_frame(frame_bgr, header, depth_image)
+        except NotImplementedError as exc:
+            self._fatal_error = (
+                f"RTMO hit a stubbed mmcv native op: {exc}. A full mmcv "
+                "build is required; refusing to publish results."
+            )
+            self.get_logger().fatal(self._fatal_error)
+            raise SystemExit from exc
+        except Exception as exc:  # noqa: BLE001 - keep the subscription alive
+            self.get_logger().error(f"Frame processing failed: {exc}")
+
     def _log_configuration(self) -> None:
         self.get_logger().info(f"Publishing SkeletonFrame on {self.output_topic}")
         if self.tracker is not None:
@@ -531,7 +688,7 @@ class RTMONode(Node):
                 f"Saving annotated {self.visualization_image_format.upper()} files "
                 f"to {self.visualization_output_dir} (every processed frame)"
             )
-            if self.input_mode == INPUT_MODE_REALSENSE:
+            if self.input_mode in (INPUT_MODE_REALSENSE, INPUT_MODE_ROS_CAMERA):
                 self.get_logger().warning(
                     "save_visualization_images encodes and writes a file for "
                     "EVERY processed frame, which costs throughput. The live "
@@ -819,9 +976,14 @@ class RTMONode(Node):
                 f"min/max {data['min']:.2f}/{data['max']:.2f}"
             ]
 
+        source = {
+            INPUT_MODE_ROS_TOPIC: self.input_topic,
+            INPUT_MODE_ROS_CAMERA: self.rgbd_topic,
+        }.get(self.input_mode, "in-process RealSense capture")
         lines = [
             "=== pipeline summary ===",
             f"  input_mode        : {self.input_mode}",
+            f"  input source      : {source}",
             f"  tracking          : "
             + (
                 f"ENABLED (BoT-SORT, ReID={'on' if self.with_reid else 'off'}, "

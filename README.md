@@ -11,7 +11,9 @@ This is the IoT / skeleton-detection subsystem. One ROS 2 node
 in a single Python process and does the following:
 
 - **RealSense RGB/depth capture** — the D456 is opened in-process with
-  `pyrealsense2`; depth is aligned to colour in the capture thread.
+  `pyrealsense2`; depth is aligned to colour in the capture thread. An
+  external `realsense2_camera` driver can be consumed instead, over a single
+  RGBD topic — see [Input modes](#input-modes).
 - **RTMO skeleton detection** — RTMO-M multi-person 2D pose, COCO-17 keypoints,
   per-person bounding boxes and confidence scores.
 - **BoT-SORT person tracking** — persistent track IDs from motion/IoU plus
@@ -28,6 +30,34 @@ in a single Python process and does the following:
 The live path is deliberately kept inside **one node / one process** so the
 high-bandwidth RealSense RGB stream never has to cross DDS before inference or
 tracking. DDS starts only at the outputs.
+
+## Input modes
+
+`input_mode` selects the frame source. All three converge on the same
+RTMO → tracking → depth → `SkeletonFrame` pipeline; nothing downstream changes.
+
+| `input_mode` | Frames from | Depth / XYZ | Typical use |
+|---|---|---|---|
+| `realsense` (default) | the D456, opened **in this process** with `pyrealsense2` | yes, aligned in-process | normal live operation |
+| `ros_topic` | a colour-only `sensor_msgs/Image` topic | no — `NaN` | offline / dummy-publisher testing |
+| `ros_camera` | one `realsense2_camera_msgs/msg/RGBD` topic from an **externally running** driver | yes, aligned **by the driver** | the camera is owned by another container |
+
+In `ros_camera` mode the **external driver** is responsible for enabling
+colour, enabling depth, RGB/depth synchronization, depth-to-colour alignment
+and publishing the RGBD topic. Skeleton Detection only consumes the resulting
+message — it never launches `realsense2_camera`, opens no camera and calls no
+`rs.align`. The driver is expected to run with `enable_rgbd:=true`,
+`enable_sync:=true`, `align_depth.enable:=true`, `enable_color:=true`,
+`enable_depth:=true`.
+
+```bash
+# consume an external driver instead of opening the camera here
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
+  input_mode:=ros_camera \
+  rgbd_topic:=/camera/camera/rgbd
+```
+
+Details in [Input modes](docs/running.md#3-input-modes).
 
 ## Pipeline
 
@@ -108,7 +138,8 @@ RTMO config), `docker/` (Dockerfile and build helpers), `test/` (pytest suite).
 - [Running the pipeline](docs/running.md) — `colcon build`, launch commands,
   visualization, topic inspection, message fields
 - [Launch arguments](docs/launch_arguments.md) — every `ros2 launch`
-  argument, its default and what it does
+  argument, its default and what it does, including `input_mode` and
+  `rgbd_topic`
 - [Parameters](docs/parameters.md) — the complete parameter reference
 - [Architecture](docs/architecture.md) — module responsibilities, data flow,
   execution order, algorithms

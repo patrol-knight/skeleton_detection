@@ -7,6 +7,7 @@ All names, types and defaults below are taken from the current source:
 - ROS parameter defaults — `skeleton_detection/iot_node.py`
   (`RTMONode._declare_parameters`) and
   `skeleton_detection/input/image_publisher.py`
+- RGBD input constants — `skeleton_detection/input/ros_camera_subscriber.py`
 - Launch argument defaults — `launch/skeleton_detection_bringup.launch.py`
 - Config-file values — `config/rtmo_node_realsense.yaml`,
   `config/rtmo_node.yaml`, `config/image_publisher.yaml`
@@ -24,7 +25,7 @@ All names, types and defaults below are taken from the current source:
 `config/rtmo_node_realsense.yaml` for the full parameter set and then applies
 its launch arguments as overrides on top. The `Launch arg?` column below marks
 which parameters that covers; [Launch arguments](launch_arguments.md) collects
-the same 24 into one command-line-oriented page. A parameter that is **not**
+the same 26 into one command-line-oriented page. A parameter that is **not**
 a launch argument is changed by editing the YAML or by running
 `ros2 run ... --ros-args -p name:=value` directly.
 
@@ -44,13 +45,40 @@ every other parameter whose default below is written with a decimal point —
 
 | Parameter | Type | Node default | Launch arg? | Description |
 |---|---|---|---|---|
-| `input_mode` | string | `ros_topic` | forced to `realsense` by the bringup launch file | `realsense` = open the D456 in this process; `ros_topic` = consume `sensor_msgs/Image` |
+| `input_mode` | string | `ros_topic` | yes (`realsense`) | `realsense` = open the D456 in this process with `pyrealsense2`; `ros_topic` = consume a colour-only `sensor_msgs/Image`; `ros_camera` = consume one `RGBD` topic from an external `realsense2_camera` driver. Any other value fails at start-up |
 | `input_topic` | string | `/dummy_camera/image_raw` | no (config only) | input topic in `ros_topic` mode |
+| `rgbd_topic` | string | `/camera/camera/rgbd` | yes (`/camera/camera/rgbd`) | `ros_camera` mode only: `realsense2_camera_msgs/msg/RGBD` topic of an **externally running** driver. One topic, not three — the message already carries colour, aligned depth and `CameraInfo` |
 
 `config/rtmo_node_realsense.yaml` sets `input_mode: realsense`;
-`config/rtmo_node.yaml` sets `input_mode: ros_topic`.
+`config/rtmo_node.yaml` sets `input_mode: ros_topic`. The bringup launch file
+overrides `input_mode` with its own launch argument, so the realsense config
+also backs `input_mode:=ros_camera`.
+
+### What each mode provides
+
+| Mode | Colour | Depth | Intrinsics | Alignment + sync done by |
+|---|---|---|---|---|
+| `realsense` | `pyrealsense2`, in process | Z16, in process | colour stream profile | this package (`rs.align`) |
+| `ros_topic` | `sensor_msgs/Image` | none — `NaN` | none — `NaN` | n/a |
+| `ros_camera` | `RGBD.rgb` | `RGBD.depth` (`16UC1` mm) | `RGBD.rgb_camera_info.k` | the **external driver** |
+
+In `ros_camera` mode this package performs **no** RGB/depth synchronization and
+**no** depth-to-colour alignment, and never calls `rs.align`. The external
+driver must be started with `enable_rgbd:=true`, `enable_sync:=true`,
+`align_depth.enable:=true`, `enable_color:=true`, `enable_depth:=true`.
+
+The depth scale on that path comes from the image **encoding**, not from a
+device: `16UC1` (millimeters) → `0.001`, `32FC1` (meters) → `1.0`. Any other
+encoding is refused rather than guessed. Intrinsics and the depth scale are
+resolved once, from the first RGBD message.
+
+The RGBD subscription uses `best_effort` / `keep_last` / depth `1`, matching
+the driver's sensor-data QoS. A `reliable` subscription would never match it.
 
 ### Input — RealSense (`input_mode: realsense`)
+
+These configure the in-process camera and are **unused** in `ros_topic` and
+`ros_camera` mode.
 
 | Parameter | Type | Node default | Launch arg? | Description |
 |---|---|---|---|---|
@@ -59,7 +87,7 @@ every other parameter whose default below is written with a decimal point —
 | `realsense_fps` | int | `60` | yes (`60`) | colour frame rate |
 | `realsense_color_format` | string | `bgr8` | no (config only) | D456 advertises `bgr8` natively at this profile, so no per-frame colour conversion happens |
 | `realsense_serial` | string | `""` | no (config only) | empty = first device found |
-| `realsense_enable_depth` | bool | `true` | yes (`true`) | open the Z16 depth stream and align it to colour. `false` = colour only; `position`/`depth` are then `NaN` for every person |
+| `realsense_enable_depth` | bool | `true` | yes (`true`) | open the Z16 depth stream and align it to colour. `false` = colour only; `position`/`depth` are then `NaN` for every person. **`realsense` mode only** — in `ros_camera` mode the external driver decides, and the node warns if this is false |
 | `camera_frame_id` | string | `camera_color_optical_frame` | no (config only) | `header.frame_id`; must name the colour optical frame, because `position` is always expressed in it |
 
 An unsupported width/height/fps/format combination fails at start-up with the
@@ -215,7 +243,7 @@ Supported suffixes: `.jpg`, `.jpeg`, `.png`, `.bmp`.
 The offline image path has no launch file: both nodes are started with
 `ros2 run` and a `--params-file`, so the YAML files are passed directly rather
 than through a launch argument. See
-[Running the pipeline](running.md#5-offline--image-pipeline).
+[Running the pipeline](running.md#6-offline--image-pipeline).
 
 ---
 

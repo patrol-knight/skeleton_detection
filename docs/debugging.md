@@ -181,6 +181,40 @@ implementation.
 - The visualization topic only exists when
   `publish_visualization_image:=true`.
 
+### `input_mode:=ros_camera` starts but no frames are processed
+
+The node logs `Input mode: ros_camera` and `RGBD topic: ...` and then stays
+quiet — no intrinsics line, no statistics.
+
+1. **Does the topic exist?** `ros2 topic list | grep rgbd`. If not, the
+   external driver was started without `enable_rgbd:=true` (which itself
+   requires `enable_sync:=true` and `align_depth.enable:=true`).
+2. **Is the driver publishing?** `ros2 topic hz /camera/camera/rgbd`. Nothing
+   here means the problem is on the driver side.
+3. **Can this container see it?** The driver runs in another container, so it
+   needs the same `ROS_DOMAIN_ID`, the same RMW implementation and DDS
+   reachability. `network_mode: host` on both sides is the simple case.
+4. **QoS.** This node subscribes `best_effort` precisely because the driver
+   publishes sensor-data QoS; `ros2 topic info /camera/camera/rgbd --verbose`
+   shows the publisher's profile.
+
+A node that *is* receiving logs the resolved intrinsics and depth scale once,
+right after the first message.
+
+### `ros_camera` exits with "not carrying depth aligned to colour"
+
+The external driver is publishing depth at a different resolution from colour,
+so it was not started with `align_depth.enable:=true`. The node refuses at
+startup rather than indexing the wrong pixels. Restart the driver with
+`enable_rgbd:=true enable_sync:=true align_depth.enable:=true`.
+
+### `ros_camera` exits with "realsense2_camera_msgs is not available"
+
+Only the message package is needed, and
+`ros-humble-realsense2-camera-msgs` normally arrives with
+`ros-humble-realsense2-camera`, which the image already installs. Re-source
+`/opt/ros/humble/setup.bash` before blaming the install.
+
 ---
 
 ## Performance

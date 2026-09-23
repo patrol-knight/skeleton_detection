@@ -53,7 +53,130 @@ parameter files all use.
 
 ---
 
-## 3. Live RealSense pipeline
+## 3. Input modes
+
+`input_mode` selects where frames come from. All three converge on the same
+RTMO → tracking → depth → `SkeletonFrame` path, so nothing downstream changes
+with the mode.
+
+| `input_mode` | Frames from | Depth / XYZ |
+|---|---|---|
+| `realsense` (default) | the D456, opened **in this process** with `pyrealsense2` | yes, aligned in-process |
+| `ros_topic` | a colour-only `sensor_msgs/Image` topic — offline/dummy testing | no, `NaN` |
+| `ros_camera` | one `RGBD` topic from an **externally running** `realsense2_camera` driver | yes, aligned **by the driver** |
+
+The launch file starts **only the skeleton-detection node** in every mode. It
+never launches `realsense2_camera`.
+
+### `realsense` — direct capture (default)
+
+The camera is opened inside the perception process, so no RGB frame crosses
+DDS before inference. This is the normal live path; see section 4.
+
+### `ros_topic` — colour-only image topic
+
+The offline/local regression path: `image_publisher` (or any publisher) sends
+`sensor_msgs/Image` on `input_topic`. No depth stream and no intrinsics, so
+`position` and `depth` are `NaN` for every person. See section 6.
+
+### `ros_camera` — external RealSense ROS driver
+
+Consumes a single `realsense2_camera_msgs/msg/RGBD` topic from a
+`realsense2_camera` driver that is **already running elsewhere**, typically in
+another container.
+
+```bash
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
+  input_mode:=ros_camera
+```
+
+```bash
+# a different topic name
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
+  input_mode:=ros_camera \
+  rgbd_topic:=/some/other/rgbd
+```
+
+**The external driver is responsible for** enabling colour, enabling depth,
+RGB/depth synchronization, depth-to-colour alignment and publishing the RGBD
+topic. Skeleton Detection only consumes the resulting message: it starts no
+driver, opens no camera, calls no `rs.align` and runs no `message_filters`
+synchronizer.
+
+That means the driver must be started roughly with:
+
+```text
+enable_rgbd:=true
+enable_sync:=true
+align_depth.enable:=true
+enable_color:=true
+enable_depth:=true
+```
+
+`enable_rgbd` requires both `enable_sync` and `align_depth.enable`; without
+them there is no RGBD topic to subscribe to.
+
+One `RGBD` message carries everything this node needs, which is exactly why
+this mode uses it instead of three separate subscriptions:
+
+| RGBD field | Used for |
+|---|---|
+| `rgb` | converted to BGR with `CvBridge`, handed to RTMO |
+| `depth` | the `(H, W)` aligned depth array, `16UC1` in millimeters |
+| `rgb_camera_info` | `k` → `CameraIntrinsics(fx, fy, cx, cy, width, height)` |
+
+Startup logs the mode and the topic, and nothing per frame:
+
+```text
+[rtmo_node]: Input mode: ros_camera
+[rtmo_node]: RGBD topic: /camera/camera/rgbd
+```
+
+Then, once the first message arrives, the resolved intrinsics and depth scale:
+
+```text
+[rtmo_node]: Colour intrinsics from CameraInfo.k (848x480): fx=... fy=... cx=... cy=...
+[rtmo_node]: Depth ENABLED: '16UC1' already aligned to colour by the external
+             driver, depth_scale=0.001000 m/unit (no rs.align in this process)
+```
+
+`realsense_width`, `realsense_height`, `realsense_fps` and
+`realsense_enable_depth` have **no effect** in this mode — the external driver
+owns the stream configuration. Setting `realsense_enable_depth:=false` here
+logs a warning saying so.
+
+#### If the callback never fires
+
+The subscription uses `best_effort` QoS to match the driver's sensor-data
+publisher; a `reliable` subscription would never match it and would stay
+silent. Check the topic exists and is actually publishing:
+
+```bash
+ros2 topic list | grep rgbd
+ros2 topic hz   /camera/camera/rgbd
+ros2 topic info /camera/camera/rgbd --verbose
+```
+
+If the topic is missing, the driver was started without `enable_rgbd:=true`.
+If it exists but `hz` reports nothing, the problem is on the driver side. The
+`--verbose` form prints the publisher's QoS.
+
+A driver publishing depth that is **not** aligned to colour is rejected once,
+at startup, naming the cause rather than failing once per frame:
+
+```text
+Depth image is 1280x720 but the colour stream is 848x480 ... Restart the
+external driver with align_depth.enable:=true
+```
+
+---
+
+## 4. Live RealSense pipeline
+
+Everything in this section is `input_mode:=realsense`, the default — the
+camera opened directly in this process. For the externally-driven variant see
+[`ros_camera`](#ros_camera--external-realsense-ros-driver) above; the tracking
+and visualization options below apply unchanged to it.
 
 ### Verify the node starts
 
@@ -140,7 +263,7 @@ ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
 
 ---
 
-## 4. Visualization
+## 5. Visualization
 
 Visualization is **off by default**. It publishes
 `/skeleton_detection/visualization_image` (`sensor_msgs/msg/Image`) at
@@ -214,7 +337,7 @@ inspection only — it is not a machine-readable perception contract.
 
 ---
 
-## 5. Offline / image pipeline
+## 6. Offline / image pipeline
 
 The local-image path needs no camera. It is run as **two `ros2 run` commands**,
 one per node — there is no launch file for it.
@@ -269,7 +392,7 @@ There is **no depth stream and no intrinsics** on this path, so `position` and
 
 ---
 
-## 6. Inspecting ROS topics and messages
+## 7. Inspecting ROS topics and messages
 
 ```bash
 ros2 node list                 # the pipeline appears as /rtmo_node
