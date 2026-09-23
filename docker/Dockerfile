@@ -148,3 +148,22 @@ COPY docker/verify_image.py /tmp/verify_image.py
 RUN python3 /tmp/verify_image.py && rm -f /tmp/verify_image.py
 
 WORKDIR /ros2_ws
+
+# Entrypoint sources ROS 2 Humble and /ros2_ws/install before running the
+# container command, so both this CMD and a Compose `command:` override start
+# with the ROS environment already set up.
+COPY docker/skeleton_detection_entrypoint.sh /skeleton_detection_entrypoint.sh
+RUN chmod +x /skeleton_detection_entrypoint.sh
+
+ENTRYPOINT ["/skeleton_detection_entrypoint.sh"]
+CMD [
+  "ros2",
+  "launch",
+  "skeleton_detection",
+  "skeleton_detection_bringup.launch.py",
+  "enable_tracking:=true",
+  "with_reid:=true",
+  "occlusion_aware_tracking:=true",
+  "publish_visualization_image:=true",
+  "draw_person_xyz:=true"
+]

@@ -2,61 +2,43 @@
 #
 # This reproduces the `docker run` invocation documented in docs/docker.md
 # exactly -- it is a transcription of the working setup, not a new
-# environment. The container starts idle; you enter it and build/launch ROS by
-# hand:
+# environment. `compose up` starts the skeleton detection launch file; the
+# image's entrypoint (docker/skeleton_detection_entrypoint.sh) sources ROS 2
+# Humble and /ros2_ws/install first. To get a shell in the running container:
 #
 #   docker compose up -d
 #   docker compose exec skeleton_humble bash
 #
 services:
   skeleton_humble:
-    # Same image tag the manual build produces (`docker build -f
-    # docker/Dockerfile -t skeleton_humble_dev .`, see docs/docker.md), so
-    # `docker compose build` and the documented manual build produce the same
-    # tag and share the same layer cache.
-    #
-    # The context stays the REPOSITORY ROOT even though the Dockerfile now
-    # lives in docker/: the build COPYs docker/mmcv_ext_stub.py,
-    # models/rtmo/, docker/fetch_models.py and docker/verify_image.py, all of
-    # which are resolved relative to the context. Narrowing the context to
-    # docker/ would put models/ out of reach and change what .dockerignore
-    # filters.
     build:
       context: .
       dockerfile: docker/Dockerfile
     image: skeleton_humble_dev
 
-    # Keeps `docker exec -it skeleton_humble bash` and every documented
-    # command that names the container working unchanged.
     container_name: skeleton_humble
 
-    # Idle process, exactly as in the documented `docker run ... sleep infinity`.
-    # The perception pipeline is NOT started automatically: `compose up` only
-    # brings up the environment, you launch ROS yourself inside it.
-    command: sleep infinity
+    command:
+      [
+        "ros2",
+        "launch",
+        "skeleton_detection",
+        "skeleton_detection_bringup.launch.py",
+        "enable_tracking:=true",
+        "with_reid:=true",
+        "occlusion_aware_tracking:=true",
+        "publish_visualization_image:=true",
+        "draw_person_xyz:=true"
+      ]
 
     # Matches the Dockerfile's WORKDIR and the colcon workspace root.
     working_dir: /ros2_ws
 
-    # --- RealSense D456 access -----------------------------------------
-    # The camera is opened in-process with pyrealsense2, which needs raw USB
-    # access. The working setup grants it with --privileged plus a /dev bind
-    # mount (see volumes below) rather than enumerating device nodes: a
-    # RealSense re-enumerates to a new /dev/bus/usb path on replug, so a fixed
-    # `devices:` mapping would break on every reconnect.
     privileged: true
 
-    # --- ROS 2 / DDS ----------------------------------------------------
-    # Host networking so DDS discovery reaches tools running on the host
-    # (ros2 topic echo, rqt_image_view) without multicast translation, and
-    # host IPC so Fast DDS shared-memory transport works across the boundary.
     network_mode: host
     ipc: host
 
-    # --- GPU ------------------------------------------------------------
-    # Equivalent of `--gpus all`: RTMO-M and the OSNet ReID backbone both run
-    # on cuda:0. Requires the NVIDIA Container Toolkit on the host, which the
-    # current setup already relies on.
     deploy:
       resources:
         reservations:
@@ -76,7 +58,4 @@ services:
       - /tmp/.X11-unix:/tmp/.X11-unix
 
     environment:
-      # The documented `docker run` passes the host's DISPLAY through; :1 is
-      # what the current container runs with, so that is the fallback when
-      # DISPLAY is unset.
       DISPLAY: ${DISPLAY:-:1}
