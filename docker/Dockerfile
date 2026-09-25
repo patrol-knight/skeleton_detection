@@ -156,14 +156,4 @@ COPY docker/skeleton_detection_entrypoint.sh /skeleton_detection_entrypoint.sh
 RUN chmod +x /skeleton_detection_entrypoint.sh
 
 ENTRYPOINT ["/skeleton_detection_entrypoint.sh"]
-CMD [
-  "ros2",
-  "launch",
-  "skeleton_detection",
-  "skeleton_detection_bringup.launch.py",
-  "enable_tracking:=true",
-  "with_reid:=true",
-  "occlusion_aware_tracking:=true",
-  "publish_visualization_image:=true",
-  "draw_person_xyz:=true"
-]
+CMD ["ros2", "launch", "skeleton_detection", "skeleton_detection_bringup.launch.py", "enable_tracking:=true", "with_reid:=true", "occlusion_aware_tracking:=true", "publish_visualization_image:=true", "draw_person_xyz:=true"]
