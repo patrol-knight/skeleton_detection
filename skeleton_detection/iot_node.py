@@ -68,7 +68,7 @@ from rclpy.qos import (
 from sensor_msgs.msg import Image
 from std_msgs.msg import Header
 
-from skeleton_detection.msg import SkeletonFrame
+from patrolknight_msgs.msg import SkeletonFrame
 
 from .output.message_builder import build_skeleton_frame, person_id_semantics
 from .inference.depth_estimation import (

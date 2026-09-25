@@ -27,7 +27,7 @@ from typing import List, Sequence
 from geometry_msgs.msg import Point
 from std_msgs.msg import Header
 
-from skeleton_detection.msg import PersonSkeleton, SkeletonFrame
+from patrolknight_msgs.msg import PersonSkeleton, SkeletonFrame
 
 from ..utils.coco_keypoints import COCO_CONNECTIONS_FLAT, NUM_COCO_KEYPOINTS
 from ..inference.rtmo_inference import PersonDetection

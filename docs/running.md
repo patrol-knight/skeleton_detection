@@ -419,7 +419,7 @@ The visualization topic only appears when
 ### Published messages
 
 `/skeleton_detection/frame` carries
-`skeleton_detection/msg/SkeletonFrame`:
+`patrolknight_msgs/msg/SkeletonFrame`:
 
 ```text
 std_msgs/Header  header        # frame_id = camera_frame_id (camera_color_optical_frame)

@@ -126,8 +126,9 @@ skeleton_detection/
 | `utils/` | shared, dependency-free helpers used across the pipeline |
 
 Supporting directories: `config/` (YAML parameter files), `launch/` (ROS 2
-launch files), `msg/` (message definitions), `models/rtmo/` (the git-tracked
+launch files), `models/rtmo/` (the git-tracked
 RTMO config), `docker/` (Dockerfile and build helpers), `test/` (pytest suite).
+The message definitions live in the separate `patrolknight_msgs` package.
 
 ## Documentation
 
