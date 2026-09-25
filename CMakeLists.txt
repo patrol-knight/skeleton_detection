@@ -13,40 +13,26 @@ endif()
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 find_package(ament_cmake REQUIRED)
 find_package(ament_cmake_python REQUIRED)
-find_package(geometry_msgs REQUIRED)
-find_package(rosidl_default_generators REQUIRED)
-find_package(std_msgs REQUIRED)
 
-rosidl_generate_interfaces(${PROJECT_NAME}
-  "msg/PersonSkeleton.msg"
-  "msg/SkeletonFrame.msg"
-  DEPENDENCIES geometry_msgs std_msgs
-)
-
-ament_get_python_install_dir(python_install_dir)
-
-install(
-  DIRECTORY skeleton_detection/
-  DESTINATION ${python_install_dir}/${PROJECT_NAME}
-  PATTERN "*.pyc" EXCLUDE
-  PATTERN "__pycache__" EXCLUDE
-)
+# Also registers the PYTHONPATH environment hook, without which the installed
+# package is not importable (previously registered by rosidl_generate_interfaces).
+ament_python_install_package(${PROJECT_NAME})
 
 set(generated_script_dir "${CMAKE_CURRENT_BINARY_DIR}/generated_scripts")
 file(MAKE_DIRECTORY "${generated_script_dir}")
 
-file(WRITE "${generated_script_dir}/camera_reader_node" [=[
+file(WRITE "${generated_script_dir}/image_publisher" [=[
 #!/usr/bin/env python3
-from skeleton_detection.camera_reader import main
+from skeleton_detection.input.image_publisher import main
 
 
 if __name__ == "__main__":
     main()
 ]=])
 
-file(WRITE "${generated_script_dir}/skeleton_detection_node" [=[
+file(WRITE "${generated_script_dir}/iot_node" [=[
 #!/usr/bin/env python3
-from skeleton_detection.skeleton_detection import main
+from skeleton_detection.iot_node import main
 
 
 if __name__ == "__main__":
@@ -55,8 +41,8 @@ if __name__ == "__main__":
 
 if(NOT WIN32)
   file(CHMOD
-    "${generated_script_dir}/camera_reader_node"
-    "${generated_script_dir}/skeleton_detection_node"
+    "${generated_script_dir}/image_publisher"
+    "${generated_script_dir}/iot_node"
     PERMISSIONS
       OWNER_READ OWNER_WRITE OWNER_EXECUTE
       GROUP_READ GROUP_EXECUTE
@@ -66,8 +52,8 @@ endif()
 
 install(
   PROGRAMS
-    "${generated_script_dir}/camera_reader_node"
-    "${generated_script_dir}/skeleton_detection_node"
+    "${generated_script_dir}/image_publisher"
+    "${generated_script_dir}/iot_node"
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -77,7 +63,5 @@ install(
     launch
   DESTINATION share/${PROJECT_NAME}
 )
-
-ament_export_dependencies(rosidl_default_runtime)
 
 ament_package()

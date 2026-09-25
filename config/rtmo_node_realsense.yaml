@@ -1,0 +1,146 @@
+# Live RealSense pipeline: D456 captured directly inside the RTMO process.
+# No realsense2_camera node, no sensor_msgs/Image on the input path.
+#
+# The launch file applies input_mode as an OVERRIDE on top of this file, so
+# the same config also backs `input_mode:=ros_camera` (an external
+# realsense2_camera driver's RGBD topic). Everything below except the
+# realsense_* block is input-independent; the realsense_* values are simply
+# unused in the other modes.
+rtmo_node:
+  ros__parameters:
+    # realsense | ros_topic | ros_camera
+    input_mode: realsense
+    # input_mode: ros_camera only -- the single RGBD topic of an ALREADY
+    # RUNNING external realsense2_camera node. That message carries colour,
+    # depth already aligned to colour, and the CameraInfo, so this package
+    # does no synchronization and no alignment of its own.
+    rgbd_topic: /camera/camera/rgbd
+
+    # --- camera (validated against the device's advertised profiles at
+    # startup; an unsupported combination fails with the supported list
+    # instead of being silently substituted) ---
+    realsense_width: 848
+    realsense_height: 480
+    realsense_fps: 60
+    # D456 advertises bgr8 natively at this profile, which is exactly what the
+    # RTMO config expects, so no per-frame colour conversion is done.
+    realsense_color_format: bgr8
+    realsense_serial: ""          # empty = first device found
+    # Z16 depth at the same resolution/rate, ALIGNED TO COLOUR inside the
+    # capture thread (rs.align(rs.stream.color)), so RTMO's colour-space
+    # keypoints index it directly. Set false to run colour-only; then
+    # PersonSkeleton.position and depth are NaN for every person.
+    realsense_enable_depth: true
+    # PersonSkeleton.position is ALWAYS in the colour camera optical frame
+    # (x right, y down, z forward); this id must name that frame.
+    camera_frame_id: camera_color_optical_frame
+
+    # --- output ---
+    output_topic: /skeleton_detection/frame
+
+    # --- model ---
+    # Baked into the Docker image by docker/fetch_models.py; override
+    # these if you want to run a different config/checkpoint.
+    model_config: /opt/models/rtmo/rtmo-m.py
+    checkpoint: /opt/models/rtmo/rtmo-m.pth
+    device: cuda:0
+    person_score_threshold: 0.3
+
+    # --- per-person 3D position (inference/depth_estimation.py) ---
+    # person Z [m] = median over the visible keypoints of the median of each
+    # keypoint's 3x3 aligned-depth neighbourhood (optical-axis Z).
+    # PersonSkeleton.position = bbox centre (u, v) deprojected at person Z
+    # with the colour intrinsics: X=(u-cx)Z/fx, Y=(v-cy)Z/fy, Z.
+    # PersonSkeleton.depth = sqrt(X^2+Y^2+Z^2), the EUCLIDEAN distance (not Z).
+    # All NaN when no visible keypoint has a valid depth sample -- never 0.
+    # A keypoint votes only at/above this RTMO per-JOINT confidence.
+    depth_keypoint_score_threshold: 0.3
+    # Optional metric sanity bounds; <= 0 disables that bound. Zero, NaN and
+    # infinite depth samples are always rejected regardless of these.
+    depth_min_m: 0.0
+    depth_max_m: 0.0
+
+    # --- tracking: BoT-SORT + OSNet ReID, in this same process ---
+    # OFF by default: it costs throughput and changes person_id semantics.
+    # When enabled, PersonSkeleton.person_id becomes a PERSISTENT track id
+    # instead of the frame-local detection index.
+    enable_tracking: false
+    with_reid: true
+    reid_checkpoint: /opt/models/reid/osnet_x0_25_msmt17.pt
+    # <=0 uses the measured pipeline rate (~55 Hz), NOT the 60 Hz camera rate:
+    # the capture buffer is latest-frame-wins, so the tracker only sees the
+    # frames RTMO actually processed. This scales BoT-SORT's track buffer.
+    tracking_frame_rate: 0.0
+    # 'none' disables camera-motion compensation (right for a static camera).
+    # Other options: ecc, orb, sift, sof.
+    cmc_method: "none"
+    # ID-switch investigation: raised from 30 to 90. BoxMOT 19.0.0 scales it by
+    # the frame rate -- max_time_lost = int(frame_rate / 30.0 * track_buffer) --
+    # so at tracking_frame_rate 55 a lost track now survives 165 frames (~3.0 s)
+    # instead of 55 frames (~1.0 s). track_high_thresh 0.5, new_track_thresh
+    # 0.6, match_thresh 0.8 and appearance_thresh 0.25 all keep the node
+    # defaults; proximity_thresh is the one other value tuned (below).
+    track_buffer: 90
+
+    # BoT-SORT masks the ReID distance to 1.0 whenever
+    #     iou_dist > proximity_thresh,   with   iou_dist = 1 - IoU
+    # so the threshold is expressed in IoU DISTANCE, not raw IoU, and RAISING
+    # it makes the gate MORE permissive:
+    #     proximity_thresh 0.50  ->  ReID usable only for IoU >= 0.50
+    #     proximity_thresh 0.70  ->  ReID usable for       IoU >= 0.30
+    # Raised from BoxMOT's 0.50 to 0.70 after the debug log showed strong
+    # appearance matches (RAW ReID 0.09-0.22, well inside appearance_thresh
+    # 0.25) being discarded at IoU 0.15-0.16. Do NOT "lower" this to 0.30:
+    # that would tighten the gate to IoU >= 0.70.
+    proximity_thresh: 0.70
+
+    # --- OCCLUSION-AWARE TRACKING (delete with occlusion_tracking.py) -----
+    # Experiment: when a matched detection is classified OCCLUDED, its bbox is
+    # NOT used as a Kalman measurement and its crop does NOT update the ReID
+    # feature. Kalman PREDICTION continues from the last trusted state and the
+    # track stays alive, so a person who is slowly occluded keeps a clean
+    # velocity and a clean appearance to be re-matched with.
+    #
+    # Exactly two states, NORMAL and OCCLUDED, from exactly ONE signal:
+    #   is_occluded = visible_ratio < visible_ratio_threshold
+    #
+    # bbox width used to be a second signal and was REMOVED: a person turning
+    # sideways drops to ~0.45 of their frontal box width with 16/17 keypoints
+    # still visible, which produced false OCCLUDED classifications.
+    #
+    # OFF by default -> stock BotSort, zero overhead. None of the BoT-SORT
+    # association thresholds above are touched by this feature.
+    occlusion_aware_tracking: false
+    # A COCO-17 joint counts as visible at or above this per-keypoint score.
+    # This is RTMO's per-JOINT confidence, not the aggregate person score.
+    keypoint_visibility_threshold: 0.30
+    visible_ratio_threshold: 0.50
+    # The two below size the INFORMATIONAL bbox-width history printed in the
+    # debug log. They classify nothing and change no tracker behaviour.
+    normal_bbox_history_size: 15
+    min_normal_width_samples: 5
+
+    # --- visualisation: human-facing only, OFF by default for performance ---
+    # Enable with: -p publish_visualization_image:=true
+    # The visualization topic is rate limited and downscaled independently of
+    # /skeleton_detection/frame, which always runs at the full pipeline rate.
+    publish_visualization_image: false
+    visualization_topic: /skeleton_detection/visualization_image
+    visualization_width: 424
+    visualization_height: 240
+    visualization_fps: 10.0
+    # 'best_effort' suits a live stream (stale frames dropped). Switch to
+    # 'reliable' if a viewer subscribes with reliable QoS and sees nothing.
+    visualization_reliability: best_effort
+    draw_joint_scores: false
+    # DEBUG: append "XYZ: (x, y, z) m" (colour optical frame) to each label.
+    draw_person_xyz: false
+    joint_score_threshold: 0.3
+    # Offline artefact: writes a file for EVERY processed frame (not rate
+    # limited). Keep false during live runs.
+    save_visualization_images: false
+
+    # --- logging ---
+    stats_log_period_sec: 1.0     # periodic summary instead of per-frame logs
+    log_every_frame: false
+    run_duration_sec: 0.0         # >0 = stop automatically (benchmark runs)

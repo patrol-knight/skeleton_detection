@@ -1,0 +1,56 @@
+services:
+  skeleton_humble:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: skeleton_humble_dev
+
+    container_name: skeleton_humble
+
+    command:
+      [
+        "ros2",
+        "launch",
+        "skeleton_detection",
+        "skeleton_detection_bringup.launch.py",
+        "input_mode:=ros_camera",
+        "rgbd_topic:=/camera/camera/rgbd",
+        "enable_tracking:=true",
+        "with_reid:=true",
+        "occlusion_aware_tracking:=true",
+        "publish_visualization_image:=true",
+        "draw_person_xyz:=true"
+      ]
+
+    working_dir: /ros2_ws
+
+    privileged: true
+
+    # REMOVE:
+    # network_mode: host
+
+    ipc: host
+
+    networks:
+      - ros-net
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    volumes:
+      - .:/ros2_ws/src/skeleton_detection
+      - /tmp/.X11-unix:/tmp/.X11-unix
+
+    environment:
+      DISPLAY: ${DISPLAY:-:1}
+      ROS_DOMAIN_ID: 0
+
+networks:
+  ros-net:
+    external: true
+    name: iot_ros-net
