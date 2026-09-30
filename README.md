@@ -101,8 +101,11 @@ runs before the message is built so `person_id` is already the persistent track
 ID at publication time; depth runs after tracking and before the message so
 `person_id` and `position` describe the same detection.
 
-With `enable_tracking:=false` the tracking stage is skipped entirely and
-`person_id` is the frame-local detection index. Occlusion-aware tracking is an
+`person_id >= 0` is always a persistent tracker ID; `person_id == -1` means the
+detection has no persistent identity right now (a new track not yet confirmed,
+an unmatched detection, or tracking off). Such people are still published with
+their skeleton, bbox and position. With `enable_tracking:=false` the tracking
+stage is skipped entirely and every `person_id` is `-1`. Occlusion-aware tracking is an
 **optional extension of the tracking stage**, not a separate path — it is off
 by default and requires tracking to be on.
 

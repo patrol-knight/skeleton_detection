@@ -62,8 +62,8 @@ rtmo_node:
 
     # --- tracking: BoT-SORT + OSNet ReID, in this same process ---
     # OFF by default: it costs throughput and changes person_id semantics.
-    # When enabled, PersonSkeleton.person_id becomes a PERSISTENT track id
-    # instead of the frame-local detection index.
+    # When enabled, PersonSkeleton.person_id becomes a PERSISTENT track id;
+    # when disabled (or before a track is confirmed) it is -1.
     enable_tracking: false
     with_reid: true
     reid_checkpoint: /opt/models/reid/osnet_x0_25_msmt17.pt

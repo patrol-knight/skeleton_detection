@@ -3,14 +3,18 @@
 Single owner of the internal -> ROS conversion, so the wire conventions live
 in exactly one place:
 
+* ``header``: the input frame's header, passed through unchanged.
+  ``header.stamp`` is the only timestamp on the message; it is never replaced
+  by the current time.
 * ``bbox``: internal **xyxy** becomes published ``[x, y, width, height]``
   (top-left + size), in original source image pixels, unclipped.
 * ``joints``: 17 COCO keypoints flattened to 51 floats,
   ``[x0, y0, conf0, x1, y1, conf1, ...]``.
 * ``connections``: the fixed 19-edge COCO topology flattened to 38 ints.
-* ``person_id``: the persistent BoT-SORT track id when tracking is enabled and
-  the tracker returned a track for this detection; otherwise the frame-local
-  detection index. See :func:`person_id_semantics`.
+* ``person_id``: the persistent BoT-SORT track id (``>= 0``) when tracking is
+  enabled and the tracker returned a track for this detection; otherwise
+  ``-1`` (no persistent identity). The person is still published with its
+  skeleton, bbox and position. See :func:`person_id_semantics`.
 * ``position``: the person's 3D point in METERS in the colour camera OPTICAL
   frame (``header.frame_id``, default ``camera_color_optical_frame``): x toward
   image right, y toward image down, z forward along the optical axis. Computed
@@ -36,8 +40,11 @@ from ..inference.rtmo_inference import PersonDetection
 def person_id_semantics(tracking_enabled: bool) -> str:
     """One-line description of what ``person_id`` means right now."""
     if tracking_enabled:
-        return "person_id = persistent BoT-SORT track id (stable across frames)"
-    return "person_id = per-frame detection index (NOT stable across frames)"
+        return (
+            "person_id = persistent BoT-SORT track id (stable across frames), "
+            "-1 while a detection has no confirmed track"
+        )
+    return "person_id = -1 for every detection (no tracker identity)"
 
 
 def build_person_skeleton(detection: PersonDetection) -> PersonSkeleton:
@@ -76,6 +83,5 @@ def build_skeleton_frame(
     frame = SkeletonFrame()
     frame.header = header
     frame.frame_index = int(frame_index)
-    frame.timestamp = header.stamp.sec + header.stamp.nanosec / 1e9
     frame.persons = [build_person_skeleton(detection) for detection in detections]
     return frame

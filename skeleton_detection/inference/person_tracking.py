@@ -324,9 +324,9 @@ class SkeletonTracker:
         BoT-SORT can age and retire its tracks correctly (verified: a track
         survives empty frames and is re-associated when the person returns).
 
-        Detections the tracker does not return a track for keep
-        ``track_id=None``; the message builder then falls back to the
-        frame-local index for that person.
+        Detections the tracker does not return a track for (e.g. a new,
+        not yet confirmed track, or an unmatched detection) keep
+        ``track_id=None`` and are published with ``person_id=-1``.
         """
         dets = self.to_boxmot_detections(detections)
         if self.occlusion_aware_tracking:

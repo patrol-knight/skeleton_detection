@@ -257,15 +257,18 @@ cost; do not read it as steady-state latency.
 
 ## Tracking
 
-### `person_id` changes every frame
+### `person_id` is always `-1`
 
-Tracking is off. With `enable_tracking:=false`, `person_id` is the frame-local
-detection index by design. Turn tracking on:
+Tracking is off. With `enable_tracking:=false`, no detection has a persistent
+identity, so every `person_id` is `-1` by design. Turn tracking on:
 
 ```bash
 ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
   enable_tracking:=true
 ```
+
+With tracking on, a person still reads `-1` for the first frame(s) until
+BoT-SORT confirms their track; that ID is not back-filled into earlier frames.
 
 The node logs which semantics are in force at start-up, and the visualization
 overlay carries a matching legend, so a saved image is never ambiguous.

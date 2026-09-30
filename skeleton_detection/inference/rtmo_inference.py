@@ -24,6 +24,10 @@ import numpy as np
 from ..utils.coco_keypoints import COCO_KEYPOINT_NAMES, NUM_COCO_KEYPOINTS
 from .depth_estimation import NO_POSITION, CameraPoint
 
+# Published ``person_id`` for a detection with no persistent tracker identity
+# (tracking disabled, or the tracker emitted no track for it this frame).
+UNTRACKED_PERSON_ID = -1
+
 
 @dataclass
 class PersonDetection:
@@ -42,7 +46,8 @@ class PersonDetection:
             tracker did not return a track for this detection this frame.
         detection_index: position of this detection in the frame's list. This
             is what BoxMOT echoes back as ``det_ind``, and it is how a track is
-            joined to the exact skeleton that produced it.
+            joined to the exact skeleton that produced it. Internal only: it is
+            NEVER published as an identity.
         position: the person's 3D point ``(x, y, z)`` in meters in the COLOUR
             camera OPTICAL frame (x right, y down, z forward), filled in after
             inference by
@@ -65,8 +70,14 @@ class PersonDetection:
 
     @property
     def person_id(self) -> int:
-        """Id to publish: the track id when tracked, else the frame-local index."""
-        return self.track_id if self.track_id is not None else self.detection_index
+        """Id to publish: the persistent tracker id, or ``-1`` when there is none.
+
+        ``>= 0`` always means a BoT-SORT track id; ``-1``
+        (:data:`UNTRACKED_PERSON_ID`) means no persistent identity is available
+        for this detection right now. The frame-local ``detection_index`` is
+        never used as a fallback.
+        """
+        return self.track_id if self.track_id is not None else UNTRACKED_PERSON_ID
 
     @property
     def depth(self) -> float:

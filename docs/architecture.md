@@ -218,7 +218,9 @@ being silently substituted.
 
 Two derived properties:
 
-- `person_id` → `track_id` when tracked, else `detection_index`.
+- `person_id` → `track_id` when tracked, else `-1` (`UNTRACKED_PERSON_ID`).
+  `detection_index` is internal (the BoxMOT `det_ind` join key) and is never
+  published as an identity.
 - `depth` → `position.distance`, i.e. `sqrt(x² + y² + z²)`. It is never stored
   separately, so it cannot drift out of sync with `position`.
 
@@ -435,12 +437,13 @@ conversion, so the wire conventions live in exactly one place:
 | `bbox` | internal `xyxy` → published `[x, y, width, height]` (top-left + size), original source pixels, unclipped |
 | `joints` | 17 COCO keypoints flattened to 51 floats, `[x0, y0, conf0, ...]` |
 | `connections` | the fixed 19-edge COCO topology flattened to 38 ints |
-| `person_id` | persistent track ID when tracked, else the frame-local index |
+| `person_id` | persistent track ID (`>= 0`) when tracked, else `-1` |
 | `position` | `geometry_msgs/Point`, meters, colour optical frame |
 | `depth` | `position.distance`, Euclidean meters |
 
 `SkeletonFrame` adds the header (whose `frame_id` is `camera_frame_id`), the
-`frame_index` counter and a `timestamp` derived from the header stamp.
+`frame_index` counter. `header.stamp` is the only timestamp: the input
+frame's stamp, passed through unchanged.
 
 `person_id_semantics()` returns the one-line description of what `person_id`
 currently means; it is logged at start-up so a log reader is never in doubt.
@@ -490,8 +493,8 @@ optionally `depth`/`position`), which is why no ROS message import is needed
 there.
 
 `legend_for(tracking_enabled, with_reid)` picks the footer text, so a reviewer
-looking at a saved file alone knows whether the drawn ID is a persistent track
-ID or a frame-local index.
+looking at a saved file alone knows whether tracking was on; a drawn `-1`
+means "no persistent identity", any other ID is a persistent track ID.
 
 `save_visualization_images` writes a file for **every** processed frame and is
 **not** rate limited, which costs throughput; the node logs a warning when it is

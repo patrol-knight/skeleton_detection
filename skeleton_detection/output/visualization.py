@@ -16,8 +16,8 @@ camera-to-person distance ``sqrt(X^2+Y^2+Z^2)``, not the RealSense Z-depth.
 With ``draw_position_xyz`` the camera-frame ``position`` is appended too
 (debug only).
 
-``person_id`` is drawn as-is.  When tracking is enabled it is a persistent
-BoT-SORT track id; when tracking is off it is the frame-local detection index.
+``person_id`` is drawn as-is.  ``>= 0`` is a persistent BoT-SORT track id;
+``-1`` means no tracker identity (tracking off, or no confirmed track yet).
 The caller selects the matching footer text with :func:`legend_for`.
 
 All coordinates are in the ORIGINAL source image coordinate system; the canvas
@@ -51,9 +51,11 @@ FONT = cv2.FONT_HERSHEY_SIMPLEX
 # Rendered onto every saved/published overlay so a reviewer looking at the file
 # alone knows what the ID actually means. Use :func:`legend_for` to pick the
 # right one -- the meaning of person_id depends on whether tracking is enabled.
-UNTRACKED_LEGEND = "ID = per-frame detection index (NOT stable across frames)"
-TRACKED_LEGEND = "ID = persistent BoT-SORT track ID"
-TRACKED_REID_LEGEND = "ID = persistent BoT-SORT track ID (motion + ReID)"
+UNTRACKED_LEGEND = "ID = -1 (tracking off, no persistent identity)"
+TRACKED_LEGEND = "ID = persistent BoT-SORT track ID (-1 = no track yet)"
+TRACKED_REID_LEGEND = (
+    "ID = persistent BoT-SORT track ID (motion + ReID; -1 = no track yet)"
+)
 DEFAULT_LEGEND = UNTRACKED_LEGEND
 
 

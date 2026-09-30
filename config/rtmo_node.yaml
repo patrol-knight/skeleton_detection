@@ -11,8 +11,8 @@ rtmo_node:
     device: cuda:0
     # Detections below this person score are not published at all.
     person_score_threshold: 0.3
-    # Offline single-image regression path: tracking off, so person_id stays
-    # the frame-local detection index.
+    # Offline single-image regression path: tracking off, so every person_id
+    # is -1 (no tracker identity).
     enable_tracking: false
     # Node default is false (live mode); the offline workflow wants it on.
     # Full source resolution here, and no rate limit: this path publishes a

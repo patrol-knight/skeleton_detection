@@ -18,7 +18,8 @@ in focused modules::
     utils.pipeline_stats.PipelineStats   timing/throughput accounting
 
 Per-frame order (tracking runs BEFORE messages are built, so person_id is
-already the persistent track id at publication time)::
+already the persistent track id at publication time, or -1 for a detection
+without one)::
 
     frame -> RTMO -> [PersonDetection] -> tracker.update() -> track_id attached
           -> depth_estimation -> detection.position (X, Y, Z) [m]

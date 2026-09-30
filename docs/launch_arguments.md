@@ -102,7 +102,7 @@ supported list rather than being silently substituted.
 
 | Argument | Default | Description |
 |---|---|---|
-| `enable_tracking` | `false` | Enable in-process BoT-SORT tracking; makes `PersonSkeleton.person_id` a persistent track ID instead of the frame-local detection index. |
+| `enable_tracking` | `false` | Enable in-process BoT-SORT tracking; makes `PersonSkeleton.person_id` a persistent track ID (`-1` when a detection has none). |
 | `with_reid` | `true` | Use OSNet ReID appearance features inside BoT-SORT. Only has an effect when `enable_tracking:=true`. |
 | `cmc_method` | `none` | Camera-motion compensation: `none`, `ecc`, `orb`, `sift`, `sof`. |
 | `proximity_thresh` | `0.70` | IoU-**distance** gate above which BoT-SORT discards the ReID distance. `iou_dist = 1 - IoU`, so `0.70` keeps appearance usable down to IoU 0.30 and **raising** this value *relaxes* the gate. |

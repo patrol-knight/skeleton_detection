@@ -217,7 +217,7 @@ Equivalent, without the launch file:
 ros2 run skeleton_detection iot_node --ros-args -p input_mode:=realsense
 ```
 
-`person_id` is the frame-local detection index in this mode.
+`person_id` is `-1` for every person in this mode (no tracker identity).
 
 ### RTMO + BoT-SORT, no ReID
 
@@ -238,7 +238,7 @@ ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
 ```
 
 With tracking on, `PersonSkeleton.person_id` is the persistent BoT-SORT track
-ID.
+ID, or `-1` for a detection that has no confirmed track yet.
 
 ### Occlusion-aware tracking (experimental, off by default)
 
@@ -424,15 +424,18 @@ The visualization topic only appears when
 ```text
 std_msgs/Header  header        # frame_id = camera_frame_id (camera_color_optical_frame)
 int32            frame_index
-float64          timestamp
 PersonSkeleton[] persons
 ```
+
+`header.stamp` is the only timestamp. It is copied unchanged from the input
+frame's header; in `ros_camera` mode that is the RealSense driver's colour
+image stamp.
 
 Each `PersonSkeleton`:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `person_id` | `int32` | persistent BoT-SORT track ID when tracking is on, else the frame-local detection index |
+| `person_id` | `int32` | `>= 0`: persistent BoT-SORT track ID. `-1`: no persistent identity (tracking off, or no confirmed track for this detection yet); the person is still published |
 | `score` | `float32` | person/instance confidence |
 | `bbox` | `float32[4]` | `[x, y, width, height]` in original camera-image pixels, unclipped |
 | `joints` | `float32[]` | 17 COCO keypoints flattened to 51 floats: `[x0, y0, conf0, x1, y1, conf1, ...]` |
