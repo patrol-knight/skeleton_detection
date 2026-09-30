@@ -12,7 +12,7 @@ tabulated in [Parameters](parameters.md).
 ## The single-process design
 
 The live perception path runs inside **one ROS node in one Python process**.
-In the default `input_mode: realsense` the RealSense colour frame is handed
+In direct `input_mode: realsense` the RealSense colour frame is handed
 from the capture thread through RTMO and into BoT-SORT **by reference** — it is
 never serialized, never copied between processes and never published on a ROS
 image topic before inference.

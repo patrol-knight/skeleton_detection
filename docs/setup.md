@@ -28,8 +28,9 @@ Required host software:
   `docker-compose`).
 - **NVIDIA Container Toolkit.** The compose service reserves `driver: nvidia`
   with `count: all`; both RTMO-M and the OSNet ReID backbone run on `cuda:0`.
-- An X server on the host if you want `rqt_image_view` inside the container.
-  The compose file bind-mounts `/tmp/.X11-unix` and passes `DISPLAY` through.
+- Optionally, an X server on the host for `rqt_image_view`. The deployed
+  container is headless; see
+  [GUI tools](docker.md#gui-tools-rqt--opt-in).
 
 The ROS 2 Humble toolchain, CUDA tools, OpenMMLab stack, RealSense bindings and
 BoxMOT all live **inside the image**. Nothing has to be installed on the host
@@ -50,10 +51,11 @@ The `bgr8` colour profile matters: the RTMO config uses `mean=[0,0,0]`,
 `std=[1,1,1]` and no `bgr_to_rgb`, so the captured frame is handed to MMPose
 with **no per-frame colour conversion**. Measured raw capture rate: 59.8 FPS.
 
-In the default `input_mode: realsense` the camera is opened **in-process** by
+In the optional direct `input_mode: realsense` the camera is opened **in-process** by
 the node with `pyrealsense2`, and no `realsense2_camera` node is involved. Raw
-USB access is what the `privileged: true` + `/dev:/dev` mount in
-`compose.yaml` provides.
+This needs the camera's `/dev/video*` / `/dev/media*` nodes, which the default
+`compose.yaml` (a `ros_camera` deployment) does not grant — see
+[Direct RealSense mode](docker.md#direct-realsense-mode-input_mode-realsense--opt-in).
 
 Two other input modes need no camera on this host:
 
@@ -100,8 +102,8 @@ recreating the container never loses them.
 1. Clone the repository (above).
 2. Build the image and start the container — see
    [Docker & Compose](docker.md).
-3. Build the ROS package with `colcon` inside the container and run the
-   pipeline — see [Running the pipeline](running.md).
+3. The image already contains the built packages; run the pipeline — see
+   [Running the pipeline](running.md).
 
 If something does not come up, [Debugging](debugging.md) covers the failures
 seen on this setup.

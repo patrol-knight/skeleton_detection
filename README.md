@@ -38,9 +38,9 @@ RTMO → tracking → depth → `SkeletonFrame` pipeline; nothing downstream cha
 
 | `input_mode` | Frames from | Depth / XYZ | Typical use |
 |---|---|---|---|
-| `realsense` (default) | the D456, opened **in this process** with `pyrealsense2` | yes, aligned in-process | normal live operation |
+| `realsense` | the D456, opened **in this process** with `pyrealsense2` | yes, aligned in-process | optional direct camera mode (`config/rtmo_node_direct_realsense.yaml`) |
 | `ros_topic` | a colour-only `sensor_msgs/Image` topic | no — `NaN` | offline / dummy-publisher testing |
-| `ros_camera` | one `realsense2_camera_msgs/msg/RGBD` topic from an **externally running** driver | yes, aligned **by the driver** | the camera is owned by another container |
+| `ros_camera` (default) | one `realsense2_camera_msgs/msg/RGBD` topic from an **externally running** driver | yes, aligned **by the driver** | the camera is owned by another container (`config/rtmo_node.yaml`) |
 
 In `ros_camera` mode the **external driver** is responsible for enabling
 colour, enabling depth, RGB/depth synchronization, depth-to-colour alignment
@@ -51,10 +51,13 @@ message — it never launches `realsense2_camera`, opens no camera and calls no
 `enable_depth:=true`.
 
 ```bash
-# consume an external driver instead of opening the camera here
+# default: config/rtmo_node.yaml (input_mode: ros_camera)
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py
+
+# open the D456 in this process instead: the mode is chosen by the config
+# file, not a launch argument
 ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
-  input_mode:=ros_camera \
-  rgbd_topic:=/camera/camera/rgbd
+  config:=/opt/skeleton_detection/share/skeleton_detection/config/rtmo_node_direct_realsense.yaml
 ```
 
 Details in [Input modes](docs/running.md#3-input-modes).
@@ -104,7 +107,7 @@ ID at publication time; depth runs after tracking and before the message so
 `person_id >= 0` is always a persistent tracker ID; `person_id == -1` means the
 detection has no persistent identity right now (a new track not yet confirmed,
 an unmatched detection, or tracking off). Such people are still published with
-their skeleton, bbox and position. With `enable_tracking:=false` the tracking
+their skeleton, bbox and position. With `enable_tracking: false` the tracking
 stage is skipped entirely and every `person_id` is `-1`. Occlusion-aware tracking is an
 **optional extension of the tracking stage**, not a separate path — it is off
 by default and requires tracking to be on.
@@ -139,11 +142,10 @@ The message definitions live in the separate `patrolknight_msgs` package.
   repository setup
 - [Docker & Compose](docs/docker.md) — image build, the Compose workflow, GPU
   and device access, when a rebuild is needed
-- [Running the pipeline](docs/running.md) — `colcon build`, launch commands,
+- [Running the pipeline](docs/running.md) — launch commands,
   visualization, topic inspection, message fields
-- [Launch arguments](docs/launch_arguments.md) — every `ros2 launch`
-  argument, its default and what it does, including `input_mode` and
-  `rgbd_topic`
+- [Launch arguments](docs/launch_arguments.md) — the single `config:=`
+  argument and how to select or edit a parameter file
 - [Parameters](docs/parameters.md) — the complete parameter reference
 - [Architecture](docs/architecture.md) — module responsibilities, data flow,
   execution order, algorithms
@@ -159,23 +161,13 @@ The message definitions live in the separate `patrolknight_msgs` package.
 ```bash
 docker compose build
 docker compose up -d
-docker compose exec skeleton_humble bash
 ```
 
-then, inside the container:
-
-```bash
-source /opt/ros/humble/setup.bash
-cd /ros2_ws && colcon build --packages-select skeleton_detection
-source /ros2_ws/install/setup.bash
-
-ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
-  enable_tracking:=true \
-  with_reid:=true \
-  occlusion_aware_tracking:=true \
-  publish_visualization_image:=true \
-  draw_person_xyz:=true
-```
+The image contains both built packages; `up` starts the pipeline with
+`config/rtmo_node.yaml` (external RealSense RGBD topic, tracking +
+ReID + occlusion-aware tracking + visualization), mounted read-only into the
+container. Edit that file and restart the container to change parameters --
+no rebuild, and no parameter values on the command line.
 
 See [docs/docker.md](docs/docker.md) and [docs/running.md](docs/running.md) for
 the full workflow.

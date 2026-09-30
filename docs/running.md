@@ -1,40 +1,29 @@
 # Running the pipeline
 
-Every command on this page is run **inside the container**. Get there with:
+Every command on this page is run **inside the container**. `docker compose
+up -d` already starts the pipeline with the mounted deployment config, so for
+the manual launches below use a separate, throwaway container instead (it
+still needs the GPU and the `iot_ros-net` network from `compose.yaml`):
 
 ```bash
-docker compose up -d
-docker compose exec skeleton_humble bash
+docker compose run --rm skeleton_humble bash
 ```
 
 See [Docker & Compose](docker.md) for the container itself,
-[Launch arguments](launch_arguments.md) for everything settable on the
-`ros2 launch` command line, and [Parameters](parameters.md) for the full
+[Launch arguments](launch_arguments.md) for selecting the parameter file
+with `config:=`, and [Parameters](parameters.md) for the full
 parameter reference.
 
 ---
 
-## 1. Build the ROS package
+## 1. The ROS packages
 
-```bash
-source /opt/ros/humble/setup.bash
-
-cd /ros2_ws
-colcon build --packages-select skeleton_detection
-
-source /ros2_ws/install/setup.bash
-```
-
-Repeat the `colcon build` + `source` pair after changing Python source, launch
-files, YAML configs or the `.msg` definitions. **No Docker image rebuild is
-needed** — the repository is bind-mounted into the container.
-
-Every later section assumes both setup files are sourced:
-
-```bash
-source /opt/ros/humble/setup.bash
-source /ros2_ws/install/setup.bash
-```
+`patrolknight_msgs` and `skeleton_detection` are built into the image at
+`/opt/patrolknight_msgs` and `/opt/skeleton_detection`, and every container
+shell already has them sourced. There is nothing to build inside the
+container. After changing source, launch files or packaged configs, rebuild
+the image (`docker compose build`); for an edit-and-run loop without a
+rebuild see [Docker & Compose](docker.md#development-iterating-without-rebuilding-the-image).
 
 ---
 
@@ -55,23 +44,37 @@ parameter files all use.
 
 ## 3. Input modes
 
+Every node setting on this page is a value in the YAML config file passed
+with `config:=`; the launch file has no other argument. For a one-off change,
+copy a packaged config, edit it and select the copy:
+
+```bash
+cp /opt/skeleton_detection/share/skeleton_detection/config/rtmo_node.yaml /tmp/my.yaml
+# edit /tmp/my.yaml
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py config:=/tmp/my.yaml
+```
+
+The recipes below list the YAML values to set; each is then started with that
+command. See [Launch arguments](launch_arguments.md).
+
 `input_mode` selects where frames come from. All three converge on the same
 RTMO → tracking → depth → `SkeletonFrame` path, so nothing downstream changes
 with the mode.
 
 | `input_mode` | Frames from | Depth / XYZ |
 |---|---|---|
-| `realsense` (default) | the D456, opened **in this process** with `pyrealsense2` | yes, aligned in-process |
+| `realsense` | the D456, opened **in this process** with `pyrealsense2` | yes, aligned in-process |
 | `ros_topic` | a colour-only `sensor_msgs/Image` topic — offline/dummy testing | no, `NaN` |
-| `ros_camera` | one `RGBD` topic from an **externally running** `realsense2_camera` driver | yes, aligned **by the driver** |
+| `ros_camera` (default) | one `RGBD` topic from an **externally running** `realsense2_camera` driver | yes, aligned **by the driver** |
 
 The launch file starts **only the skeleton-detection node** in every mode. It
 never launches `realsense2_camera`.
 
-### `realsense` — direct capture (default)
+### `realsense` — direct capture (optional)
 
 The camera is opened inside the perception process, so no RGB frame crosses
-DDS before inference. This is the normal live path; see section 4.
+DDS before inference. Selected with `config/rtmo_node_direct_realsense.yaml`;
+see section 4.
 
 ### `ros_topic` — colour-only image topic
 
@@ -83,19 +86,16 @@ The offline/local regression path: `image_publisher` (or any publisher) sends
 
 Consumes a single `realsense2_camera_msgs/msg/RGBD` topic from a
 `realsense2_camera` driver that is **already running elsewhere**, typically in
-another container.
+another container. It is the default: the packaged `config/rtmo_node.yaml`
+selects it (with tracking, ReID, occlusion-aware tracking and visualization
+on):
 
 ```bash
-ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
-  input_mode:=ros_camera
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py
 ```
 
-```bash
-# a different topic name
-ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
-  input_mode:=ros_camera \
-  rgbd_topic:=/some/other/rgbd
-```
+For a different topic name, set `rgbd_topic: /some/other/rgbd` in your copy of
+that file.
 
 **The external driver is responsible for** enabling colour, enabling depth,
 RGB/depth synchronization, depth-to-colour alignment and publishing the RGBD
@@ -142,7 +142,7 @@ Then, once the first message arrives, the resolved intrinsics and depth scale:
 
 `realsense_width`, `realsense_height`, `realsense_fps` and
 `realsense_enable_depth` have **no effect** in this mode — the external driver
-owns the stream configuration. Setting `realsense_enable_depth:=false` here
+owns the stream configuration. Setting `realsense_enable_depth: false` here
 logs a warning saying so.
 
 #### If the callback never fires
@@ -173,21 +173,28 @@ external driver with align_depth.enable:=true
 
 ## 4. Live RealSense pipeline
 
-Everything in this section is `input_mode:=realsense`, the default — the
-camera opened directly in this process. For the externally-driven variant see
+Everything in this section is `input_mode: realsense`, selected with
+`config/rtmo_node_direct_realsense.yaml` — the camera opened directly in this
+process. Start it with:
+
+```bash
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
+  config:=/opt/skeleton_detection/share/skeleton_detection/config/rtmo_node_direct_realsense.yaml
+```
+
+The recipes below are values to set in your copy of that file. For the externally-driven variant see
 [`ros_camera`](#ros_camera--external-realsense-ros-driver) above; the tracking
 and visualization options below apply unchanged to it.
 
 ### Verify the node starts
 
-```bash
-ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
-  run_duration_sec:=30.0
+```yaml
+run_duration_sec: 30.0
 ```
 
-> **`run_duration_sec` is a DOUBLE.** Pass `30.0`, not `30` — an integer
+> **`run_duration_sec` is a DOUBLE.** Write `30.0`, not `30` — an integer
 > literal is rejected as the wrong parameter type. The same applies to every
-> other float parameter, e.g. `visualization_fps:=30.0`.
+> other float parameter, e.g. `visualization_fps: 30.0`.
 
 A healthy start-up logs the resolved model paths:
 
@@ -207,8 +214,11 @@ ros2 run skeleton_detection iot_node --ros-args -p input_mode:=realsense
 
 ### RTMO only (tracking off — maximum throughput)
 
+`rtmo_node_direct_realsense.yaml` as shipped (tracking and visualization off):
+
 ```bash
-ros2 launch skeleton_detection skeleton_detection_bringup.launch.py
+ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
+  config:=/opt/skeleton_detection/share/skeleton_detection/config/rtmo_node_direct_realsense.yaml
 ```
 
 Equivalent, without the launch file:
@@ -221,20 +231,18 @@ ros2 run skeleton_detection iot_node --ros-args -p input_mode:=realsense
 
 ### RTMO + BoT-SORT, no ReID
 
-```bash
-ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
-  enable_tracking:=true \
-  with_reid:=false
+```yaml
+enable_tracking: true
+with_reid: false
 ```
 
 Persistent track IDs from motion/IoU alone, with very little overhead.
 
 ### RTMO + BoT-SORT + OSNet ReID
 
-```bash
-ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
-  enable_tracking:=true \
-  with_reid:=true
+```yaml
+enable_tracking: true
+with_reid: true
 ```
 
 With tracking on, `PersonSkeleton.person_id` is the persistent BoT-SORT track
@@ -242,21 +250,19 @@ ID, or `-1` for a detection that has no confirmed track yet.
 
 ### Occlusion-aware tracking (experimental, off by default)
 
-```bash
-ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
-  enable_tracking:=true \
-  occlusion_aware_tracking:=true
+```yaml
+enable_tracking: true
+occlusion_aware_tracking: true
 ```
 
-Turn it off again explicitly with `occlusion_aware_tracking:=false` — that is
-stock BoT-SORT with zero overhead. It requires `enable_tracking:=true`; on its
-own it does nothing.
+Turn it off again with `occlusion_aware_tracking: false` — that is stock
+BoT-SORT with zero overhead. It requires `enable_tracking: true`; on its own
+it does nothing.
 
 ### Without depth
 
-```bash
-ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
-  realsense_enable_depth:=false
+```yaml
+realsense_enable_depth: false
 ```
 
 `position` and `depth` are then `NaN` for every person.
@@ -269,19 +275,17 @@ Visualization is **off by default**. It publishes
 `/skeleton_detection/visualization_image` (`sensor_msgs/msg/Image`) at
 424 × 240, 10 Hz, `best_effort` QoS.
 
-```bash
-ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
-  publish_visualization_image:=true
+```yaml
+publish_visualization_image: true
 ```
 
 Full tracking with visualization at 30 Hz:
 
-```bash
-ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
-  enable_tracking:=true \
-  with_reid:=true \
-  publish_visualization_image:=true \
-  visualization_fps:=30.0
+```yaml
+enable_tracking: true
+with_reid: true
+publish_visualization_image: true
+visualization_fps: 30.0
 ```
 
 The visualization rate is independent of the `SkeletonFrame` publish rate,
@@ -301,22 +305,20 @@ ros2 run skeleton_detection iot_node --ros-args \
 
 Append each person's camera-frame XYZ to the overlay label (debug):
 
-```bash
-ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
-  publish_visualization_image:=true \
-  draw_person_xyz:=true
+```yaml
+publish_visualization_image: true
+draw_person_xyz: true
 ```
 
 ### Viewing it with rqt
 
-In a second shell into the container, with a working graphical display:
+The deployed container is headless, so run the viewer in a throwaway
+container with X11 (see [GUI tools](docker.md#gui-tools-rqt--opt-in)):
 
 ```bash
-docker compose exec skeleton_humble bash
-source /opt/ros/humble/setup.bash
-source /ros2_ws/install/setup.bash
-
-ros2 run rqt_image_view rqt_image_view \
+xhost +local:docker      # on the HOST
+docker compose run --rm -e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
+  skeleton_humble ros2 run rqt_image_view rqt_image_view \
   /skeleton_detection/visualization_image
 ```
 
@@ -353,13 +355,13 @@ Use the shipped YAML files, which set `input_mode: ros_topic`, enable
 ```bash
 # shell 1 — the perception node
 ros2 run skeleton_detection iot_node --ros-args \
-  --params-file /ros2_ws/install/skeleton_detection/share/skeleton_detection/config/rtmo_node.yaml
+  --params-file /opt/skeleton_detection/share/skeleton_detection/config/offline_rtmo_node.yaml
 ```
 
 ```bash
 # shell 2 — the image source
 ros2 run skeleton_detection image_publisher --ros-args \
-  --params-file /ros2_ws/install/skeleton_detection/share/skeleton_detection/config/image_publisher.yaml
+  --params-file /opt/skeleton_detection/share/skeleton_detection/config/offline_image_publisher.yaml
 ```
 
 No `-r __node:=` remap is needed: the nodes name themselves `rtmo_node` and
@@ -409,12 +411,12 @@ From a second shell in one line:
 
 ```bash
 docker compose exec skeleton_humble bash -lc \
-  'source /opt/ros/humble/setup.bash && source /ros2_ws/install/setup.bash && \
+  'source /opt/ros/humble/setup.bash && source /opt/skeleton_detection/setup.bash && \
    ros2 topic hz /skeleton_detection/frame'
 ```
 
 The visualization topic only appears when
-`publish_visualization_image:=true`.
+`publish_visualization_image: true`.
 
 ### Published messages
 

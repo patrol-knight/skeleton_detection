@@ -52,7 +52,7 @@ Dockerfile:
 | `ros-humble-sensor-msgs` | 4.9.2-1jammy | `sensor_msgs/Image`, on the visualization output and the offline input path |
 | `ros-humble-geometry-msgs` | 4.9.2-1jammy | `geometry_msgs/Point` — the `position` field of `PersonSkeleton.msg` |
 | `ros-humble-realsense2-camera` | 4.58.3-1jammy | **pulled in for its `librealsense2` dependency and for `realsense2_camera_msgs`, not for the node.** This package never launches a `realsense2_camera` node in any input mode |
-| `ros-humble-realsense2-camera-msgs` | 4.58.3-1jammy | pulled in by the above. Provides `realsense2_camera_msgs/msg/RGBD`, which `input_mode:=ros_camera` subscribes to. The MESSAGE package only — the driver itself runs externally |
+| `ros-humble-realsense2-camera-msgs` | 4.58.3-1jammy | pulled in by the above. Provides `realsense2_camera_msgs/msg/RGBD`, which `input_mode: ros_camera` subscribes to. The MESSAGE package only — the driver itself runs externally |
 | `ros-humble-rqt-image-view` | 1.2.0-2jammy | viewing `/skeleton_detection/visualization_image` |
 | `ros-humble-rqt-gui` | 1.1.9-1jammy | rqt shell for the above |
 
@@ -302,9 +302,11 @@ wheel is self-contained (it bundles its own librealsense), so the two never
 actually have to interoperate — keeping them on the same version avoids
 surprises if both are ever loaded.
 
-**Device access:** the container runs as root with `/dev:/dev` bind-mounted and
-`privileged: true`, which is enough for libusb to claim the camera. **No udev
-rules are installed inside the container.**
+**Device access:** the wheel uses the V4L2 backend, so the camera's
+`/dev/video*` and `/dev/media*` nodes are enough (verified 2026-09-30); no
+`privileged` and no `/dev/bus/usb` are needed. The default compose grants
+none of this — direct mode is opt-in, see `docs/docker.md`. **No udev rules
+are installed inside the container.**
 
 **Verified device** (2026-09-07): RealSense D456, serial `308222301472`,
 firmware 5.17.0.10, USB 3.2. Colour profile **848×480 @ 60 fps `bgr8`** is
@@ -499,12 +501,12 @@ that inference is still correct:
 | Step | Command / check |
 |---|---|
 | Image builds and the gate passes | `docker compose build` (runs `verify_image.py`) |
-| Package builds | `rm -rf build/skeleton_detection install/skeleton_detection && colcon build --packages-select skeleton_detection` |
-| Unit tests | `python3 -m pytest test/ -q -p no:anyio` |
+| Package builds | part of `docker compose build` (`colcon build` of the `ament_python` package into `/opt/skeleton_detection`) |
+| Unit tests | `docker run --rm -v "$PWD":/src:ro -w /src skeleton_humble_dev python3 -m pytest test -q -p no:anyio -p no:cacheprovider` |
 | RTMO inference | node starts, logs `Loaded RTMO-M` and `Keypoint layout verified: COCO-17`, and produces plausible keypoints |
-| BoT-SORT tracking | `enable_tracking:=true` — IDs stay stable across frames; check the logged association gates |
-| ReID | `with_reid:=true` — ReID loads, and re-identification across a brief occlusion still works |
-| Occlusion-aware tracking | `occlusion_aware_tracking:=true` — **highest breakage risk on a boxmot upgrade**; confirm `OcclusionAwareSTrack` is actually instantiated and `test/test_occlusion_tracking.py` passes |
+| BoT-SORT tracking | `enable_tracking: true` — IDs stay stable across frames; check the logged association gates |
+| ReID | `with_reid: true` — ReID loads, and re-identification across a brief occlusion still works |
+| Occlusion-aware tracking | `occlusion_aware_tracking: true` — **highest breakage risk on a boxmot upgrade**; confirm `OcclusionAwareSTrack` is actually instantiated and `test/test_occlusion_tracking.py` passes |
 | RealSense capture | live camera opens at 848×480 @ 60 `bgr8`, capture FPS near 60 |
 | Depth / XYZ | `position` and `depth` are finite and plausible for a person at a known distance — **not** `NaN` for everyone |
 | ROS publication | `ros2 topic hz /skeleton_detection/frame` and `ros2 topic echo --once` show correct field values |
@@ -525,8 +527,5 @@ Dependency-specific extra care:
   still advertises 848×480 @ 60 `bgr8`.
 
 Running the live pipeline for a fixed window is the quickest end-to-end check:
-
-```bash
-ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
-  enable_tracking:=true run_duration_sec:=30.0
-```
+copy `config/rtmo_node_direct_realsense.yaml`, set `enable_tracking: true` and
+`run_duration_sec: 30.0`, and launch it with `config:=<copy>`.

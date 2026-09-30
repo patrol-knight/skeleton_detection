@@ -147,13 +147,41 @@ ENV RTMO_MODEL_CONFIG=/opt/models/rtmo/rtmo-m.py \
 COPY docker/verify_image.py /tmp/verify_image.py
 RUN python3 /tmp/verify_image.py && rm -f /tmp/verify_image.py
 
+# patrolknight_msgs (SkeletonFrame/PersonSkeleton) is owned upstream in its
+# own repo. It is cloned and built HERE, at image build time, into its own
+# install space /opt/patrolknight_msgs -- never at container start-up.
+# Override PATROLKNIGHT_MSGS_REF to pin a tag or branch.
+ARG PATROLKNIGHT_MSGS_REF=main
+RUN git clone --depth 1 --branch ${PATROLKNIGHT_MSGS_REF} \
+        https://github.com/patrol-knight/patrolknight_msgs.git /tmp/patrolknight_ws/src/patrolknight_msgs \
+    && . /opt/ros/humble/setup.sh \
+    && cd /tmp/patrolknight_ws \
+    && colcon build --merge-install --install-base /opt/patrolknight_msgs --cmake-args -DCMAKE_BUILD_TYPE=Release \
+    && rm -rf /tmp/patrolknight_ws
+
+# This package itself, built at image build time into /opt/skeleton_detection
+# on top of /opt/patrolknight_msgs. The image runs this installed copy; it does
+# not need the repository bind-mounted, and it never builds at start-up.
+# .dockerignore keeps docs, tests, data and local build output out of this
+# copy, so editing them does not re-run the build.
+COPY . /tmp/skeleton_ws/src/skeleton_detection/
+RUN . /opt/ros/humble/setup.sh \
+    && . /opt/patrolknight_msgs/setup.sh \
+    && cd /tmp/skeleton_ws \
+    && colcon build --merge-install --install-base /opt/skeleton_detection \
+    && rm -rf /tmp/skeleton_ws
+
 WORKDIR /ros2_ws
 
-# Entrypoint sources ROS 2 Humble and /ros2_ws/install before running the
-# container command, so both this CMD and a Compose `command:` override start
-# with the ROS environment already set up.
-COPY docker/skeleton_detection_entrypoint.sh /skeleton_detection_entrypoint.sh
-RUN chmod +x /skeleton_detection_entrypoint.sh
+# Start-up only sources the three install spaces and runs the command; it
+# clones nothing and builds nothing. The same lines go into .bashrc so an
+# interactive `docker exec ... bash` gets the same environment.
+RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc && \
+    echo "source /opt/patrolknight_msgs/setup.bash" >> /root/.bashrc && \
+    echo "source /opt/skeleton_detection/setup.bash" >> /root/.bashrc
 
-ENTRYPOINT ["/skeleton_detection_entrypoint.sh"]
-CMD ["ros2", "launch", "skeleton_detection", "skeleton_detection_bringup.launch.py", "enable_tracking:=true", "with_reid:=true", "occlusion_aware_tracking:=true", "publish_visualization_image:=true", "draw_person_xyz:=true"]
+ENTRYPOINT ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && source /opt/patrolknight_msgs/setup.bash && source /opt/skeleton_detection/setup.bash && exec \"$@\"", "--"]
+
+# Parameters come from the packaged config/rtmo_node.yaml (ros_camera); select
+# another file with `config:=<path>` instead of listing parameters here.
+CMD ["ros2", "launch", "skeleton_detection", "skeleton_detection_bringup.launch.py"]

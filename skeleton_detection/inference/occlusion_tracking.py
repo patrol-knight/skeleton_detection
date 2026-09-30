@@ -56,16 +56,20 @@ four stages) is untouched; only ``STrack.update`` / ``STrack.re_activate`` /
 
 Turning it off
 --------------
-``occlusion_aware_tracking:=false`` never builds any of this: ``tracking.py``
-constructs a stock ``BotSort`` and the per-frame cost is exactly zero.
+Set ``occlusion_aware_tracking: false`` in the YAML config selected with
+``config:=`` (the launch file has no per-parameter arguments). Then none of
+this is built: ``person_tracking.py`` constructs a stock ``BotSort`` and the
+per-frame cost is exactly zero.
 
 Removing it
 -----------
 1. delete this file
-2. delete the ``OCCLUSION-AWARE TRACKING`` blocks in ``tracking.py``,
-   ``iot_node.py``, ``launch/skeleton_detection_bringup.launch.py`` and
-   ``config/rtmo_node_realsense.yaml``
-3. delete ``test/test_occlusion_tracking.py``
+2. delete the ``OCCLUSION-AWARE TRACKING`` blocks in ``person_tracking.py``,
+   ``iot_node.py`` and ``config/rtmo_node_direct_realsense.yaml``
+3. delete the ``occlusion_aware_tracking`` line from ``config/rtmo_node.yaml``
+   (an undeclared key would be silently ignored at runtime and fails
+   ``test/test_node_config.py``), and its assertion in that test
+4. delete ``test/test_occlusion_tracking.py``
 """
 
 import datetime as _dt

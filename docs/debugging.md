@@ -2,12 +2,11 @@
 
 Failures actually seen on this setup, and what to do about them.
 
-Commands assume you are inside the container with both setup files sourced:
+Commands assume you are inside the container. Every container shell already
+has ROS, `patrolknight_msgs` and `skeleton_detection` sourced:
 
 ```bash
 docker compose exec skeleton_humble bash
-source /opt/ros/humble/setup.bash
-source /ros2_ws/install/setup.bash
 ```
 
 ---
@@ -32,13 +31,12 @@ An empty list means the container cannot see the camera at all. Check, in
 order:
 
 1. `lsusb` on the **host** — is the D456 enumerated?
-2. Is the container running with `privileged: true` and `/dev:/dev`? Both come
-   from `compose.yaml`; a container started by an older, hand-written
-   `docker run` may be missing them.
-3. Did the camera re-enumerate? A RealSense moves to a new `/dev/bus/usb/...`
-   path on every replug. The `/dev` bind mount is used precisely so this keeps
-   working — but a container started **before** the host saw the device may
-   still need `docker compose restart`.
+2. Does the container have the camera's `/dev/video*` and `/dev/media*`
+   nodes? The default `compose.yaml` grants **no** device access (it is for
+   `ros_camera`); direct mode needs the opt-in override in
+   [Docker & Compose](docker.md#direct-realsense-mode-input_mode-realsense--opt-in).
+3. Did the camera re-enumerate? The node numbers can change on replug;
+   recreate the container so it gets the current ones.
 4. USB 3 vs USB 2. 848 × 480 @ 60 needs USB 3.x; a USB 2 port or cable will not
    advertise that profile.
 
@@ -87,9 +85,8 @@ docker rm -f skeleton_humble
 docker compose up -d
 ```
 
-Nothing of value is lost: your source is on the host bind mount and the model
-weights are in the image. You will need a fresh `colcon build`, because
-`/ros2_ws/build`, `/ros2_ws/install` and `/ros2_ws/log` are container-local.
+Nothing of value is lost: the model weights and both built packages are in the
+image.
 
 ### `docker compose exec` says the service is not running
 
@@ -116,14 +113,13 @@ docker compose exec skeleton_humble bash -lc \
 ```
 
 `False` means the NVIDIA Container Toolkit is missing or misconfigured on the
-host. As a stopgap, run on CPU with `device:=cpu` — expect a large slowdown.
+host. As a stopgap, run on CPU with `device: cpu` in the config — expect a large slowdown.
 
 ### USB and `/dev` problems
 
-The container gets raw device access through `privileged: true` plus
-`/dev:/dev`, not through an explicit `devices:` mapping, because a RealSense
-re-enumerates to a new path on replug. If you have edited `compose.yaml` and
-removed either, USB access stops working.
+Direct mode needs only the V4L2 nodes (`/dev/video*`, `/dev/media*`), not
+`privileged` or `/dev/bus/usb`. Another process holding the camera — e.g. the
+IoT `realsense` container — makes it unavailable here.
 
 ---
 
@@ -131,25 +127,23 @@ removed either, USB access stops working.
 
 `rqt_image_view` shows nothing, or fails with a display error.
 
-1. Check `DISPLAY` inside the container:
-   ```bash
-   docker compose exec skeleton_humble bash -lc 'echo $DISPLAY'
-   ```
-   `compose.yaml` passes the host's `DISPLAY` through, falling back to `:1`.
+1. The deployed container is headless: it has no `DISPLAY` and no X11
+   socket. Run rqt in a separate container that gets both — see
+   [GUI tools](docker.md#gui-tools-rqt--opt-in).
 2. Allow the container to talk to the host X server:
    ```bash
    xhost +local:docker      # run on the HOST
    ```
-3. Confirm `/tmp/.X11-unix` is bind-mounted (`docker compose config`).
+3. Check that `echo $DISPLAY` inside that rqt container is not empty.
 4. If the display works but the image window stays blank, the topic is probably
-   not being published — visualization is **off by default**. Start with
-   `publish_visualization_image:=true` and check:
+   not being published — visualization is **off by default**. Set
+   `publish_visualization_image: true` in the config and check:
    ```bash
    ros2 topic hz /skeleton_detection/visualization_image
    ```
 5. A viewer subscribing with **reliable** QoS sees nothing from the default
    `best_effort` publisher. Switch the publisher with
-   `visualization_reliability:=reliable`.
+   `visualization_reliability: reliable` in the config.
 
 ---
 
@@ -179,9 +173,9 @@ implementation.
 - `ros2 topic hz /skeleton_detection/frame` — is the pipeline producing at all?
 - With `person_score_threshold` too high, frames publish with zero persons.
 - The visualization topic only exists when
-  `publish_visualization_image:=true`.
+  `publish_visualization_image: true`.
 
-### `input_mode:=ros_camera` starts but no frames are processed
+### `input_mode: ros_camera` starts but no frames are processed
 
 The node logs `Input mode: ros_camera` and `RGBD topic: ...` and then stays
 quiet — no intrinsics line, no statistics.
@@ -224,11 +218,10 @@ Only the message package is needed, and
 Measure first. The node logs a statistics line every `stats_log_period_sec`
 with `capture_fps`, `skeleton_fps`, `rtmo_ms`, `track_ms` and the
 `captured` / `processed` / `dropped` counters, and prints a mean/median/p95
-summary on shutdown. Run a fixed benchmark:
+summary on shutdown. Run a fixed benchmark by setting, in the config:
 
-```bash
-ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
-  run_duration_sec:=30.0
+```yaml
+run_duration_sec: 30.0
 ```
 
 Expected on this hardware: RTMO only ~50–55 FPS, + BoT-SORT without ReID
@@ -236,9 +229,9 @@ Expected on this hardware: RTMO only ~50–55 FPS, + BoT-SORT without ReID
 
 Things that cost throughput, in rough order:
 
-1. **ReID** — the largest single cost. Try `with_reid:=false`; motion-only
+1. **ReID** — the largest single cost. Try `with_reid: false`; motion-only
    BoT-SORT adds very little.
-2. **`save_visualization_images:=true`** — writes a file for **every**
+2. **`save_visualization_images: true`** — writes a file for **every**
    processed frame and is **not** rate limited. The node warns about this in
    realsense mode. Keep it off during live runs.
 3. **A high `visualization_fps`** — drawing happens only when a sink is due, so
@@ -259,12 +252,12 @@ cost; do not read it as steady-state latency.
 
 ### `person_id` is always `-1`
 
-Tracking is off. With `enable_tracking:=false`, no detection has a persistent
-identity, so every `person_id` is `-1` by design. Turn tracking on:
+Tracking is off. With `enable_tracking: false`, no detection has a persistent
+identity, so every `person_id` is `-1` by design. Turn tracking on in the
+config file:
 
-```bash
-ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
-  enable_tracking:=true
+```yaml
+enable_tracking: true
 ```
 
 With tracking on, a person still reads `-1` for the first frame(s) until
@@ -315,7 +308,7 @@ means departing from a known-good baseline.
 
 ### Occlusion-aware tracking diagnostics
 
-It requires `enable_tracking:=true`; on its own it does nothing. When it is on,
+It requires `enable_tracking: true`; on its own it does nothing. When it is on,
 the node logs a warning so it can never be on unnoticed:
 
 ```text
@@ -337,8 +330,8 @@ and `SkeletonTracker` logs the thresholds actually in use.
   `INFORMATIONAL ONLY` and classify nothing. Width was deliberately removed as
   a signal because a person turning sideways drops to ~0.45 of their frontal
   box width with 16/17 keypoints still visible.
-- To rule the feature out entirely, run with
-  `occlusion_aware_tracking:=false` — that constructs a stock `BotSort` with
+- To rule the feature out entirely, set
+  `occlusion_aware_tracking: false` — that constructs a stock `BotSort` with
   zero overhead.
 
 ---
@@ -350,7 +343,7 @@ and `SkeletonTracker` logs the thresholds actually in use.
 That is the documented "unavailable" value — it is never `0`. Causes, in order
 of likelihood:
 
-1. `realsense_enable_depth:=false`.
+1. `realsense_enable_depth: false`.
 2. `input_mode: ros_topic` — the offline path has no depth stream and no
    intrinsics, so `position`/`depth` are **always** `NaN` there.
 3. No visible keypoint produced a valid depth sample: the person is out of the
@@ -391,50 +384,49 @@ Symptoms: a parameter you added is "not declared", an old module name is still
 imported, a launch file that no longer exists is still found, or a renamed
 module resolves to the deleted one.
 
-`colcon` installs the Python package by **copying** it into
-`install/`, so a deleted or renamed source file can survive there. Clean
-rebuild:
-
-```bash
-cd /ros2_ws
-rm -rf build install log
-source /opt/ros/humble/setup.bash
-colcon build --packages-select skeleton_detection
-source /ros2_ws/install/setup.bash
-```
-
-Always re-`source` `install/setup.bash` in **every** open shell after a
-rebuild; an old shell keeps pointing at the previous install tree.
+The container runs the copy built into the image at
+`/opt/skeleton_detection`, so source changes only arrive with an image
+rebuild: `docker compose build && docker compose up -d`. If you use the
+development overlay (see [Docker & Compose](docker.md#development-iterating-without-rebuilding-the-image)),
+`colcon` installs by **copying** into `/ros2_ws/install/`, so a deleted or
+renamed file can survive there -- `rm -rf /ros2_ws/build /ros2_ws/install
+/ros2_ws/log`, rebuild, and re-`source /ros2_ws/install/setup.bash` in
+**every** open shell.
 
 ### `ros2 run` cannot find the executable
 
 The executable is `iot_node` (the node it starts is named `rtmo_node`). If
 `ros2 run skeleton_detection iot_node` fails, the workspace is not sourced or
-the build did not complete. Check:
+the image build did not complete. Check:
 
 ```bash
-ls /ros2_ws/install/skeleton_detection/lib/skeleton_detection
+ls /opt/skeleton_detection/lib/skeleton_detection
 ```
 
 You should see `iot_node` and `image_publisher`.
 
 ### Changes to the host source do not take effect
 
-Editing Python on the host is immediately visible inside the container (the
-repository is bind-mounted), but ROS runs the **installed copy**. Re-run
-`colcon build` and re-source. An image rebuild is *not* needed for source
-edits — see [Docker & Compose](docker.md) for when it is.
+The source is not mounted: the container runs the package built into the
+image. Rebuild the image (`docker compose build`) -- see
+[Docker & Compose](docker.md) -- or use the development overlay described
+there.
 
 ---
 
 ## Tests
 
-Run them inside the container:
+The image does not contain `test/`, so mount the repository read-only into a
+throwaway container (read-only also keeps `.pytest_cache` and `__pycache__`
+out of the source tree):
 
 ```bash
-cd /ros2_ws/src/skeleton_detection
-python3 -m pytest test -q -p no:anyio
+docker run --rm -v "$PWD":/src:ro -w /src skeleton_humble_dev \
+  python3 -m pytest test -q -p no:anyio -p no:cacheprovider
 ```
+
+No GPU, camera or network is needed. Tests that need ROS, `patrolknight_msgs`
+or `boxmot` skip themselves when those are missing.
 
 ### The `-p no:anyio` flag is required
 
@@ -481,6 +473,6 @@ checks: `input_mode` must be `realsense` or `ros_topic`;
 `min_normal_width_samples` must be `>= 1`.
 
 Also check the parameter **types**: `run_duration_sec` is a DOUBLE, so
-`run_duration_sec:=30` is rejected and `run_duration_sec:=30.0` is correct. The
+`run_duration_sec: 30` is rejected and `run_duration_sec: 30.0` is correct. The
 same holds for `visualization_fps`, `tracking_frame_rate`,
 `stats_log_period_sec` and `proximity_thresh`.

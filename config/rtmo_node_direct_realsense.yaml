@@ -1,11 +1,9 @@
 # Live RealSense pipeline: D456 captured directly inside the RTMO process.
 # No realsense2_camera node, no sensor_msgs/Image on the input path.
 #
-# The launch file applies input_mode as an OVERRIDE on top of this file, so
-# the same config also backs `input_mode:=ros_camera` (an external
-# realsense2_camera driver's RGBD topic). Everything below except the
-# realsense_* block is input-independent; the realsense_* values are simply
-# unused in the other modes.
+# Optional mode: select it with
+#   config:=<share>/config/rtmo_node_direct_realsense.yaml
+# The launch default is rtmo_node.yaml (external realsense2_camera driver).
 rtmo_node:
   ros__parameters:
     # realsense | ros_topic | ros_camera

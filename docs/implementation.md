@@ -193,10 +193,13 @@ and it is only imported when `occlusion_aware_tracking` is true. With the
 switch off, `SkeletonTracker` constructs a stock `BotSort` and
 `occlusion_tracking.py` never runs.
 
-Removing the feature entirely means deleting
-`inference/occlusion_tracking.py` and the parameters marked
-`OCCLUSION-AWARE TRACKING (delete with occlusion_tracking.py)` in
-`iot_node.py`, the launch file and the YAML.
+To turn it off, set `occlusion_aware_tracking: false` in the YAML config; the
+launch file has no per-parameter arguments. Removing the feature entirely
+means deleting `inference/occlusion_tracking.py`, the blocks marked
+`OCCLUSION-AWARE TRACKING` in `iot_node.py`, `inference/person_tracking.py`
+and `config/rtmo_node_direct_realsense.yaml`, the `occlusion_aware_tracking`
+line in `config/rtmo_node.yaml`, and `test/test_occlusion_tracking.py` — see
+the module docstring of `occlusion_tracking.py`.
 
 ---
 

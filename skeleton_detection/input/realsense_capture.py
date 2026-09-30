@@ -299,7 +299,7 @@ class RealSenseCapture:
             f"  Change realsense_width/height/fps/color_format to a supported "
             f"combination"
             + (
-                " (or set realsense_enable_depth:=false to run without depth)"
+                " (or set realsense_enable_depth: false to run without depth)"
                 if label == "depth"
                 else ""
             )

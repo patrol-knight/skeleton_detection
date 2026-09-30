@@ -661,7 +661,7 @@ class RTMONode(Node):
                     "EXPERIMENTAL occlusion-aware tracking is ON: OCCLUDED "
                     "observations no longer update the Kalman motion state or "
                     "the ReID appearance state. Turn it off with "
-                    "occlusion_aware_tracking:=false."
+                    "occlusion_aware_tracking: false in the config."
                 )
         else:
             self.get_logger().info(

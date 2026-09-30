@@ -13,18 +13,17 @@ services:
         "launch",
         "skeleton_detection",
         "skeleton_detection_bringup.launch.py",
-        "input_mode:=ros_camera",
-        "rgbd_topic:=/camera/camera/rgbd",
-        "enable_tracking:=true",
-        "with_reid:=true",
-        "occlusion_aware_tracking:=true",
-        "publish_visualization_image:=true",
-        "draw_person_xyz:=true"
+        "config:=/config/rtmo_node.yaml"
       ]
 
     working_dir: /ros2_ws
 
-    privileged: true
+    # Headless and unprivileged: in the default ros_camera deployment the
+    # RealSense is owned by a separate realsense2_camera container and this
+    # one only subscribes to its RGBD topic, so it needs no device access and
+    # no display. GPU access comes from the `deploy` block below, not from
+    # privileged mode. Direct `input_mode: realsense` needs extra device
+    # access -- see docs/docker.md.
 
     # REMOVE:
     # network_mode: host
@@ -42,12 +41,13 @@ services:
               count: all
               capabilities: [gpu]
 
+    # No source mount: the image runs its own built-in install of this
+    # package. Only the deployment config is mounted, so it can be edited or
+    # swapped without rebuilding the image.
     volumes:
-      - .:/ros2_ws/src/skeleton_detection
-      - /tmp/.X11-unix:/tmp/.X11-unix
+      - ./config/rtmo_node.yaml:/config/rtmo_node.yaml:ro
 
     environment:
-      DISPLAY: ${DISPLAY:-:1}
       ROS_DOMAIN_ID: 0
 
 networks:

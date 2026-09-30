@@ -5,7 +5,6 @@
 /skeleton_detection/log/
 /skeleton_detection/launch/__pycache__/
 /skeleton_detection/skeleton_detection/__pycache__/
-/skeleton_detection/pifpaf_env
 /skeleton_detection/.vscode
 /skeleton_detection/.codex
 /build
@@ -16,11 +15,13 @@
 /output/
 
 /tool/
-/test/
 
 # Python bytecode anywhere (models/ now contains .py config files)
 __pycache__/
 *.py[cod]
+
+# pytest cache (the test/ sources themselves ARE tracked)
+.pytest_cache/
 
 # --- Model weights: NEVER commit these ---------------------------------
 # Checkpoints are downloaded into the Docker image at build time by

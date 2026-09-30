@@ -1,6 +1,11 @@
 # Docker & Compose
 
-How the container image is built and how the development container is run.
+How the container image is built and how its container is run.
+
+The image is **self-contained**: `patrolknight_msgs` and this package are
+built into it at `docker build` time. Container start-up only sources the
+install spaces and runs the command -- it clones nothing, builds nothing and
+needs no source bind mount.
 
 Prerequisites and host expectations are in [Setup](setup.md). What to run once
 you are inside the container is in [Running the pipeline](running.md).
@@ -22,7 +27,8 @@ docker compose down
 ```
 
 All three commands are run from the **repository root**, where `compose.yaml`
-lives.
+lives. `docker compose up -d` starts the pipeline with the deployment config
+`config/rtmo_node.yaml` (see [below](#what-composeyaml-does)).
 
 ---
 
@@ -75,6 +81,15 @@ does, so both share the same layer cache.
   are also the node's parameter defaults.
 - Runs `docker/verify_image.py`, a build-time gate that fails the build if any
   pinned version, import chain or baked asset is missing or displaced.
+- Clones `patrolknight_msgs` (build arg `PATROLKNIGHT_MSGS_REF`, default
+  `main`) and builds it into `/opt/patrolknight_msgs`.
+- Copies this package (`package.xml`, `setup.py`, `setup.cfg`, `resource/`,
+  `skeleton_detection/`, `config/`, `launch/`) and builds it — an
+  `ament_python` package — on top into `/opt/skeleton_detection`.
+- `ENTRYPOINT` sources `/opt/ros/humble`, `/opt/patrolknight_msgs` and
+  `/opt/skeleton_detection`, then `exec`s the command. `CMD` is a plain
+  `ros2 launch skeleton_detection skeleton_detection_bringup.launch.py`, which
+  uses the packaged `config/rtmo_node.yaml` (`input_mode: ros_camera`).
 
 Expect a long first build; the checkpoint download needs network access.
 Subsequent builds are almost entirely cached.
@@ -99,30 +114,67 @@ One service, `skeleton_humble`, which is a transcription of the working
 |---|---|---|
 | `image` | `skeleton_humble_dev` | same tag as the manual `docker build` |
 | `container_name` | `skeleton_humble` | every documented command names it |
-| `command` | `sleep infinity` | the container starts **idle** |
+| `command` | `ros2 launch ... config:=/config/rtmo_node.yaml` | starts the pipeline with the mounted deployment config |
 | `working_dir` | `/ros2_ws` | the Dockerfile `WORKDIR` and colcon workspace root |
-| `privileged` | `true` | raw USB access for the RealSense |
 | `network_mode` | `host` | DDS discovery reaches host-side tools |
 | `ipc` | `host` | Fast DDS shared-memory transport across the boundary |
 | `deploy.resources.reservations.devices` | `driver: nvidia`, `count: all` | equivalent of `--gpus all` |
-| `environment.DISPLAY` | `${DISPLAY:-:1}` | X11 for `rqt_image_view` |
 
-**`compose up` does not start the pipeline.** It only brings the environment
-up; you enter the container and launch ROS yourself.
+**`compose up` starts the pipeline.** Every parameter comes from the mounted
+config file; the command lists no parameter values.
+
+The service is **headless and unprivileged**: no `privileged`, no device
+nodes, no `DISPLAY` or X11 socket. In the default `ros_camera` deployment the
+RealSense belongs to a separate `realsense2_camera` container and this one
+only subscribes to its RGBD topic; the node itself opens no windows (the
+visualization is a ROS image topic).
 
 ### GPU access
 
 The `deploy` block is the Compose equivalent of `--gpus all` and requires the
-NVIDIA Container Toolkit on the host. RTMO-M and the OSNet ReID backbone both
+NVIDIA Container Toolkit on the host. It is independent of `privileged`: the
+NVIDIA runtime injects the GPU device nodes and driver libraries itself. RTMO-M and the OSNet ReID backbone both
 run on `cuda:0` by default (`device` parameter).
 
-### RealSense device access
+### Direct RealSense mode (`input_mode: realsense`) — opt-in
 
-Granted with `privileged: true` plus a `/dev:/dev` bind mount, rather than an
-explicit `devices:` mapping. A RealSense re-enumerates to a new
-`/dev/bus/usb/...` path on every replug, so a fixed device mapping would break
-on each reconnect. No udev rules are installed inside the container; running as
-root with `/dev` mounted is sufficient for libusb to claim the camera.
+The default compose grants no camera access. To open the D456 in this
+container instead, pass its V4L2 nodes. The bundled `pyrealsense2` uses the
+V4L2 backend, so `/dev/video*` and `/dev/media*` are enough — no
+`privileged`, no `/dev/bus/usb`, no udev. For example, with a local override
+file (on this host the D456 is `video0`–`video5` and `media0`–`media1`; check
+yours with `ls /dev/video* /dev/media*`):
+
+```yaml
+# compose.realsense.yaml
+services:
+  skeleton_humble:
+    command:
+      - ros2
+      - launch
+      - skeleton_detection
+      - skeleton_detection_bringup.launch.py
+      - config:=/opt/skeleton_detection/share/skeleton_detection/config/rtmo_node_direct_realsense.yaml
+    devices:
+      - /dev/video0
+      - /dev/video1
+      - /dev/video2
+      - /dev/video3
+      - /dev/video4
+      - /dev/video5
+      - /dev/media0
+      - /dev/media1
+```
+
+```bash
+docker compose -f compose.yaml -f compose.realsense.yaml up -d
+```
+
+The overridden command selects the packaged `rtmo_node_direct_realsense.yaml`. Only one
+process can own the camera, so stop the IoT `realsense` container first
+(`compose.yaml` still joins the external `iot_ros-net` network; without the
+IoT stack, create it once with `docker network create iot_ros-net`). The
+node numbers can change after a replug; recreate the container if so.
 
 ### Host networking and IPC
 
@@ -131,36 +183,44 @@ root with `/dev` mounted is sufficient for libusb to claim the camera.
 `ipc: host` lets Fast DDS use its shared-memory transport across the container
 boundary.
 
-### X11 / rqt support
+### GUI tools (rqt) — opt-in
 
-`/tmp/.X11-unix` is bind-mounted and `DISPLAY` is passed through, falling back
-to `:1` when the host has no `DISPLAY` set. That is enough for
-`rqt_image_view` and `rqt_gui` inside the container.
+The deployed container has no display. To look at
+`/skeleton_detection/visualization_image` with `rqt_image_view`, start a
+throwaway container with X11 just for that:
+
+```bash
+xhost +local:docker      # on the HOST
+docker compose run --rm -e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
+  skeleton_humble ros2 run rqt_image_view rqt_image_view \
+  /skeleton_detection/visualization_image
+```
 
 ### Bind mounts
 
 ```yaml
 volumes:
-  - .:/ros2_ws/src/skeleton_detection
-  - /dev:/dev
-  - /tmp/.X11-unix:/tmp/.X11-unix
+  - ./config/rtmo_node.yaml:/config/rtmo_node.yaml:ro
 ```
 
-The repository is mounted at `/ros2_ws/src/skeleton_detection` — **source
-only**. Model weights come from the image at `/opt/models`, never from the
-mount, so no checkpoints ever land on the host.
+The source tree is **not** mounted: the container runs the package built into
+the image. Only the deployment config is mounted, read-only, so it can be
+edited or swapped for another file without rebuilding the image -- restart
+the container to apply it. Another deployment (e.g. the IoT compose) mounts
+its own YAML the same way and passes `config:=<path>`.
 
 ---
 
 ## When a Docker image rebuild is needed
 
-Because the repository is bind-mounted, **editing Python, YAML, launch files or
-message definitions on the host takes effect inside the container
-immediately**. You do not rebuild the image for source edits — you re-run
-`colcon build` inside the container (see
-[Running the pipeline](running.md)).
+The package is built into the image, so **any change to Python source,
+launch files or the packaged configs needs an image rebuild** to reach the
+container. The one exception is the mounted deployment config, which only
+needs a container restart.
 
-Rebuild the image only when something the image itself owns changes:
+Rebuild the image when any of these change:
+
+- `skeleton_detection/`, `launch/`, `config/`, `package.xml`, `setup.py`, `setup.cfg`
 
 - `docker/Dockerfile`
 - a pinned dependency version
@@ -188,11 +248,23 @@ docker compose up -d
 | Restart | `docker compose restart` — or `docker compose up -d` after a config change |
 | Stop and remove | `docker compose down` |
 
-`docker compose down` removes the container, not the image and not
-`/opt/models`: the weights live in an image layer, so recreating the container
-always gets them back. It **does** discard the container-local
-`/ros2_ws/build`, `/ros2_ws/install` and `/ros2_ws/log`, so the next start
-needs a fresh `colcon build`. Your source is on the host and is untouched.
+`docker compose down` removes the container, not the image: the weights and
+both built packages live in image layers, so recreating the container always
+gets them back.
+
+### Development: iterating without rebuilding the image
+
+For a quick edit-and-run loop, mount the source **deliberately** into a
+throwaway container and build an overlay on top of the baked-in install:
+
+```bash
+docker compose run --rm -v .:/ros2_ws/src/skeleton_detection skeleton_humble bash
+# inside:
+cd /ros2_ws && colcon build --packages-select skeleton_detection
+source /ros2_ws/install/setup.bash    # now overrides /opt/skeleton_detection
+```
+
+This is a development convenience only; the deployed image never uses it.
 
 Containers created by an earlier plain `docker run` use the same
 `skeleton_humble` name and will make `docker compose up -d` fail with a name
