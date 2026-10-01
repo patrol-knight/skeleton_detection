@@ -182,6 +182,6 @@ RUN echo "source /opt/ros/humble/setup.bash" >> /root/.bashrc && \
 
 ENTRYPOINT ["/bin/bash", "-c", "source /opt/ros/humble/setup.bash && source /opt/patrolknight_msgs/setup.bash && source /opt/skeleton_detection/setup.bash && exec \"$@\"", "--"]
 
-# Parameters come from the packaged config/rtmo_node.yaml (ros_camera); select
+# Parameters come from the packaged config/skeleton_detection_node.yaml (ros_camera); select
 # another file with `config:=<path>` instead of listing parameters here.
 CMD ["ros2", "launch", "skeleton_detection", "skeleton_detection_bringup.launch.py"]

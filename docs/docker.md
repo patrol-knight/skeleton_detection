@@ -28,7 +28,7 @@ docker compose down
 
 All three commands are run from the **repository root**, where `compose.yaml`
 lives. `docker compose up -d` starts the pipeline with the deployment config
-`config/rtmo_node.yaml` (see [below](#what-composeyaml-does)).
+`config/skeleton_detection_node.yaml` (see [below](#what-composeyaml-does)).
 
 ---
 
@@ -89,7 +89,7 @@ does, so both share the same layer cache.
 - `ENTRYPOINT` sources `/opt/ros/humble`, `/opt/patrolknight_msgs` and
   `/opt/skeleton_detection`, then `exec`s the command. `CMD` is a plain
   `ros2 launch skeleton_detection skeleton_detection_bringup.launch.py`, which
-  uses the packaged `config/rtmo_node.yaml` (`input_mode: ros_camera`).
+  uses the packaged `config/skeleton_detection_node.yaml` (`input_mode: ros_camera`).
 
 Expect a long first build; the checkpoint download needs network access.
 Subsequent builds are almost entirely cached.
@@ -114,7 +114,7 @@ One service, `skeleton_humble`, which is a transcription of the working
 |---|---|---|
 | `image` | `skeleton_humble_dev` | same tag as the manual `docker build` |
 | `container_name` | `skeleton_humble` | every documented command names it |
-| `command` | `ros2 launch ... config:=/config/rtmo_node.yaml` | starts the pipeline with the mounted deployment config |
+| `command` | `ros2 launch ... config:=/config/skeleton_detection_node.yaml` | starts the pipeline with the mounted deployment config |
 | `working_dir` | `/ros2_ws` | the Dockerfile `WORKDIR` and colcon workspace root |
 | `network_mode` | `host` | DDS discovery reaches host-side tools |
 | `ipc` | `host` | Fast DDS shared-memory transport across the boundary |
@@ -200,7 +200,7 @@ docker compose run --rm -e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
 
 ```yaml
 volumes:
-  - ./config/rtmo_node.yaml:/config/rtmo_node.yaml:ro
+  - ./config/skeleton_detection_node.yaml:/config/skeleton_detection_node.yaml:ro
 ```
 
 The source tree is **not** mounted: the container runs the package built into

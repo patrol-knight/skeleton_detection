@@ -3,7 +3,7 @@
 #
 # Optional mode: select it with
 #   config:=<share>/config/rtmo_node_direct_realsense.yaml
-# The launch default is rtmo_node.yaml (external realsense2_camera driver).
+# The launch default is skeleton_detection_node.yaml (external realsense2_camera driver).
 rtmo_node:
   ros__parameters:
     # realsense | ros_topic | ros_camera

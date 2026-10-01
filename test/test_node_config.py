@@ -17,7 +17,7 @@ Coverage:
        would otherwise disable a setting without any error), and each file
        selects its intended input_mode
     5  the bringup launch file exposes only ``config`` and defaults to
-       config/rtmo_node.yaml
+       config/skeleton_detection_node.yaml
 """
 
 import importlib.util
@@ -146,7 +146,7 @@ def test_cmc_method_none_maps_to_python_none(make_node, configured, effective):
 @pytest.mark.parametrize(
     "filename,input_mode",
     [
-        ("rtmo_node.yaml", "ros_camera"),
+        ("skeleton_detection_node.yaml", "ros_camera"),
         ("rtmo_node_direct_realsense.yaml", "realsense"),
         ("offline_rtmo_node.yaml", "ros_topic"),
     ],
@@ -161,7 +161,7 @@ def test_packaged_config_loads_and_selects_its_input_mode(make_node, filename, i
 
 
 def test_default_config_is_the_ros_camera_deployment(make_node):
-    node = make_node(**load_rtmo_config("rtmo_node.yaml"))
+    node = make_node(**load_rtmo_config("skeleton_detection_node.yaml"))
     assert node.input_mode == "ros_camera"
     assert node.rgbd_topic == "/camera/camera/rgbd"
     assert node.enable_tracking and node.with_reid and node.occlusion_aware_tracking
@@ -171,7 +171,7 @@ def test_default_config_is_the_ros_camera_deployment(make_node):
 # ----------------------------------------------------------------------
 # 5 - launch default
 # ----------------------------------------------------------------------
-def test_launch_file_exposes_only_config_defaulting_to_rtmo_node_yaml():
+def test_launch_file_exposes_only_config_defaulting_to_skeleton_detection_node_yaml():
     pytest.importorskip("launch")
     from ament_index_python.packages import (
         PackageNotFoundError,
@@ -192,4 +192,4 @@ def test_launch_file_exposes_only_config_defaulting_to_rtmo_node_yaml():
     arguments = [e for e in description.entities if isinstance(e, DeclareLaunchArgument)]
     assert [argument.name for argument in arguments] == ["config"]
     default = "".join(part.text for part in arguments[0].default_value)
-    assert default.endswith(os.path.join("config", "rtmo_node.yaml"))
+    assert default.endswith(os.path.join("config", "skeleton_detection_node.yaml"))

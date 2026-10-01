@@ -13,7 +13,7 @@ services:
         "launch",
         "skeleton_detection",
         "skeleton_detection_bringup.launch.py",
-        "config:=/config/rtmo_node.yaml"
+        "config:=/config/skeleton_detection_node.yaml"
       ]
 
     working_dir: /ros2_ws
@@ -45,7 +45,7 @@ services:
     # package. Only the deployment config is mounted, so it can be edited or
     # swapped without rebuilding the image.
     volumes:
-      - ./config/rtmo_node.yaml:/config/rtmo_node.yaml:ro
+      - ./config/skeleton_detection_node.yaml:/config/skeleton_detection_node.yaml:ro
 
     environment:
       ROS_DOMAIN_ID: 0

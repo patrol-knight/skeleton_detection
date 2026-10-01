@@ -66,7 +66,7 @@ Removing it
 1. delete this file
 2. delete the ``OCCLUSION-AWARE TRACKING`` blocks in ``person_tracking.py``,
    ``iot_node.py`` and ``config/rtmo_node_direct_realsense.yaml``
-3. delete the ``occlusion_aware_tracking`` line from ``config/rtmo_node.yaml``
+3. delete the ``occlusion_aware_tracking`` line from ``config/skeleton_detection_node.yaml``
    (an undeclared key would be silently ignored at runtime and fails
    ``test/test_node_config.py``), and its assertion in that test
 4. delete ``test/test_occlusion_tracking.py``

@@ -40,7 +40,7 @@ RTMO → tracking → depth → `SkeletonFrame` pipeline; nothing downstream cha
 |---|---|---|---|
 | `realsense` | the D456, opened **in this process** with `pyrealsense2` | yes, aligned in-process | optional direct camera mode (`config/rtmo_node_direct_realsense.yaml`) |
 | `ros_topic` | a colour-only `sensor_msgs/Image` topic | no — `NaN` | offline / dummy-publisher testing |
-| `ros_camera` (default) | one `realsense2_camera_msgs/msg/RGBD` topic from an **externally running** driver | yes, aligned **by the driver** | the camera is owned by another container (`config/rtmo_node.yaml`) |
+| `ros_camera` (default) | one `realsense2_camera_msgs/msg/RGBD` topic from an **externally running** driver | yes, aligned **by the driver** | the camera is owned by another container (`config/skeleton_detection_node.yaml`) |
 
 In `ros_camera` mode the **external driver** is responsible for enabling
 colour, enabling depth, RGB/depth synchronization, depth-to-colour alignment
@@ -51,7 +51,7 @@ message — it never launches `realsense2_camera`, opens no camera and calls no
 `enable_depth:=true`.
 
 ```bash
-# default: config/rtmo_node.yaml (input_mode: ros_camera)
+# default: config/skeleton_detection_node.yaml (input_mode: ros_camera)
 ros2 launch skeleton_detection skeleton_detection_bringup.launch.py
 
 # open the D456 in this process instead: the mode is chosen by the config
@@ -164,7 +164,7 @@ docker compose up -d
 ```
 
 The image contains both built packages; `up` starts the pipeline with
-`config/rtmo_node.yaml` (external RealSense RGBD topic, tracking +
+`config/skeleton_detection_node.yaml` (external RealSense RGBD topic, tracking +
 ReID + occlusion-aware tracking + visualization), mounted read-only into the
 container. Edit that file and restart the container to change parameters --
 no rebuild, and no parameter values on the command line.

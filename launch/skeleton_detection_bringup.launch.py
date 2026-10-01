@@ -8,7 +8,7 @@ The ``config`` YAML is the single source of truth for every node parameter,
 including ``input_mode``; this file does not know or care which mode the
 selected YAML uses. It has no per-parameter arguments.
 
-Default: the packaged ``config/rtmo_node.yaml`` (``input_mode: ros_camera``,
+Default: the packaged ``config/skeleton_detection_node.yaml`` (``input_mode: ros_camera``,
 consuming the RGBD topic of an external realsense2_camera driver):
 
     ros2 launch skeleton_detection skeleton_detection_bringup.launch.py
@@ -18,7 +18,7 @@ Any other parameter file, e.g. the packaged
 process) or a config mounted into the container:
 
     ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \\
-        config:=/config/rtmo_node.yaml
+        config:=/config/skeleton_detection_node.yaml
 """
 
 import os
@@ -32,7 +32,7 @@ from launch_ros.actions import Node
 
 def generate_launch_description() -> LaunchDescription:
     share_dir = get_package_share_directory("skeleton_detection")
-    default_config = os.path.join(share_dir, "config", "rtmo_node.yaml")
+    default_config = os.path.join(share_dir, "config", "skeleton_detection_node.yaml")
 
     return LaunchDescription(
         [

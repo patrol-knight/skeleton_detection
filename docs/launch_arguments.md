@@ -5,7 +5,7 @@ has exactly **one** argument:
 
 | Argument | Default | Description |
 |---|---|---|
-| `config` | `<share>/config/rtmo_node.yaml` | Parameter file for `rtmo_node`. Any path works, e.g. a file bind-mounted into the container. |
+| `config` | `<share>/config/skeleton_detection_node.yaml` | Parameter file for `rtmo_node`. Any path works, e.g. a file bind-mounted into the container. |
 
 `<share>` is `get_package_share_directory("skeleton_detection")`, i.e.
 `/opt/skeleton_detection/share/skeleton_detection` in the image.
@@ -29,13 +29,13 @@ Packaged configs, in `<share>/config/`:
 
 | File | `input_mode` | Use |
 |---|---|---|
-| `rtmo_node.yaml` | `ros_camera` | **default**: external `realsense2_camera` driver; tracking + ReID + occlusion-aware tracking + visualization on (also what `compose.yaml` mounts) |
+| `skeleton_detection_node.yaml` | `ros_camera` | **default**: external `realsense2_camera` driver; tracking + ReID + occlusion-aware tracking + visualization on (also what `compose.yaml` mounts) |
 | `rtmo_node_direct_realsense.yaml` | `realsense` | optional: D456 opened in this process; tracking and visualization off |
 | `offline_rtmo_node.yaml` | `ros_topic` | offline image regression (used with `ros2 run`, see [Running the pipeline](running.md)) |
 | `offline_image_publisher.yaml` | — | the `image_publisher` node that feeds `offline_rtmo_node.yaml` |
 
 ```bash
-# default: packaged rtmo_node.yaml (ros_camera)
+# default: packaged skeleton_detection_node.yaml (ros_camera)
 ros2 launch skeleton_detection skeleton_detection_bringup.launch.py
 
 # any other file, e.g. direct camera mode
@@ -48,7 +48,7 @@ ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
 Copy a packaged config, edit it, and select the copy:
 
 ```bash
-cp /opt/skeleton_detection/share/skeleton_detection/config/rtmo_node.yaml /tmp/my.yaml
+cp /opt/skeleton_detection/share/skeleton_detection/config/skeleton_detection_node.yaml /tmp/my.yaml
 # edit /tmp/my.yaml, e.g.  visualization_fps: 30.0
 ros2 launch skeleton_detection skeleton_detection_bringup.launch.py config:=/tmp/my.yaml
 ```

@@ -49,7 +49,7 @@ with `config:=`; the launch file has no other argument. For a one-off change,
 copy a packaged config, edit it and select the copy:
 
 ```bash
-cp /opt/skeleton_detection/share/skeleton_detection/config/rtmo_node.yaml /tmp/my.yaml
+cp /opt/skeleton_detection/share/skeleton_detection/config/skeleton_detection_node.yaml /tmp/my.yaml
 # edit /tmp/my.yaml
 ros2 launch skeleton_detection skeleton_detection_bringup.launch.py config:=/tmp/my.yaml
 ```
@@ -86,7 +86,7 @@ The offline/local regression path: `image_publisher` (or any publisher) sends
 
 Consumes a single `realsense2_camera_msgs/msg/RGBD` topic from a
 `realsense2_camera` driver that is **already running elsewhere**, typically in
-another container. It is the default: the packaged `config/rtmo_node.yaml`
+another container. It is the default: the packaged `config/skeleton_detection_node.yaml`
 selects it (with tracking, ReID, occlusion-aware tracking and visualization
 on):
 

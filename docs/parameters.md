@@ -8,7 +8,7 @@ All names, types and defaults below are taken from the current source:
   (`RTMONode._declare_parameters`) and
   `skeleton_detection/input/image_publisher.py`
 - RGBD input constants — `skeleton_detection/input/ros_camera_subscriber.py`
-- Config-file values — `config/rtmo_node.yaml`,
+- Config-file values — `config/skeleton_detection_node.yaml`,
   `config/rtmo_node_direct_realsense.yaml`, `config/offline_rtmo_node.yaml`,
   `config/offline_image_publisher.yaml`
 
@@ -19,7 +19,7 @@ All names, types and defaults below are taken from the current source:
 1. **Node default** — what `declare_parameter` sets when the YAML does not
    mention the parameter.
 2. **Config file** — the YAML selected with `config:=<path>` (default
-   `config/rtmo_node.yaml`). It is the single source of truth: the
+   `config/skeleton_detection_node.yaml`). It is the single source of truth: the
    bringup launch file passes it to the node unchanged and has no
    per-parameter arguments.
 
@@ -49,7 +49,7 @@ every other parameter whose default below is written with a decimal point —
 | `input_topic` | string | `/dummy_camera/image_raw` | input topic in `ros_topic` mode |
 | `rgbd_topic` | string | `/camera/camera/rgbd` | `ros_camera` mode only: `realsense2_camera_msgs/msg/RGBD` topic of an **externally running** driver. One topic, not three — the message already carries colour, aligned depth and `CameraInfo` |
 
-`config/rtmo_node.yaml` (the default) sets `input_mode: ros_camera`;
+`config/skeleton_detection_node.yaml` (the default) sets `input_mode: ros_camera`;
 `config/rtmo_node_direct_realsense.yaml` sets `input_mode: realsense`;
 `config/offline_rtmo_node.yaml` sets `input_mode: ros_topic`. The mode is chosen by
 selecting the config file; the launch file itself has no `input_mode`
@@ -236,7 +236,7 @@ Supported suffixes: `.jpg`, `.jpeg`, `.png`, `.bmp`.
 
 | Launch file | Argument | Default | Description |
 |---|---|---|---|
-| `skeleton_detection_bringup.launch.py` | `config` | `<share>/config/rtmo_node.yaml` | parameter file for `rtmo_node`; the only launch argument, and the single source of every node parameter |
+| `skeleton_detection_bringup.launch.py` | `config` | `<share>/config/skeleton_detection_node.yaml` | parameter file for `rtmo_node`; the only launch argument, and the single source of every node parameter |
 
 `<share>` is `get_package_share_directory("skeleton_detection")`.
 
