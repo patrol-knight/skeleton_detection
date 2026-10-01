@@ -127,9 +127,8 @@ IoT `realsense` container — makes it unavailable here.
 
 `rqt_image_view` shows nothing, or fails with a display error.
 
-1. The deployed container is headless: it has no `DISPLAY` and no X11
-   socket. Run rqt in a separate container that gets both — see
-   [GUI tools](docker.md#gui-tools-rqt--opt-in).
+1. The image is headless and has no rqt installed. Run rqt in the IoT
+   `diagnose` container — see [GUI tools](docker.md#gui-tools-rqt--opt-in).
 2. Allow the container to talk to the host X server:
    ```bash
    xhost +local:docker      # run on the HOST
@@ -149,12 +148,12 @@ IoT `realsense` container — makes it unavailable here.
 
 ## DDS / topics
 
-### Host-side tools do not see the topics
+### Other tools do not see the topics
 
-The container uses `network_mode: host` so DDS discovery reaches host tools
-without multicast translation, and `ipc: host` so Fast DDS shared memory works
-across the boundary. If either is removed from `compose.yaml`, discovery
-breaks.
+The container joins the IoT bridge network `iot_ros-net` (not host
+networking), and uses `ipc: host` so Fast DDS shared memory works across the
+boundary. Tools in other containers on `iot_ros-net` (e.g. `diagnose`) see the
+topics; ROS tools running directly on the host may not.
 
 Check from inside the container first — if the topic is not there, it is not a
 DDS problem:
@@ -164,9 +163,9 @@ ros2 node list      # expect /rtmo_node
 ros2 topic list     # expect /skeleton_detection/frame
 ```
 
-Then from the host with ROS 2 sourced. If it works inside but not outside,
-confirm both sides use the same `ROS_DOMAIN_ID` and the same RMW
-implementation.
+Then from another container on `iot_ros-net` (e.g. `diagnose`). If it works
+inside but not outside, confirm both sides are on that network and use the same
+`ROS_DOMAIN_ID` and the same RMW implementation.
 
 ### The topic exists but nothing arrives
 
@@ -187,7 +186,7 @@ quiet — no intrinsics line, no statistics.
    here means the problem is on the driver side.
 3. **Can this container see it?** The driver runs in another container, so it
    needs the same `ROS_DOMAIN_ID`, the same RMW implementation and DDS
-   reachability. `network_mode: host` on both sides is the simple case.
+   reachability: both containers must be on `iot_ros-net`.
 4. **QoS.** This node subscribes `best_effort` precisely because the driver
    publishes sensor-data QoS; `ros2 topic info /camera/camera/rgbd --verbose`
    shows the publisher's profile.
@@ -204,9 +203,8 @@ startup rather than indexing the wrong pixels. Restart the driver with
 
 ### `ros_camera` exits with "realsense2_camera_msgs is not available"
 
-Only the message package is needed, and
-`ros-humble-realsense2-camera-msgs` normally arrives with
-`ros-humble-realsense2-camera`, which the image already installs. Re-source
+Only the message package is needed: the image installs
+`ros-humble-realsense2-camera-msgs` (not the driver). Re-source
 `/opt/ros/humble/setup.bash` before blaming the install.
 
 ---

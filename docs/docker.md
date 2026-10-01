@@ -116,7 +116,7 @@ One service, `skeleton_humble`, which is a transcription of the working
 | `container_name` | `skeleton_humble` | every documented command names it |
 | `command` | `ros2 launch ... config:=/config/skeleton_detection_node.yaml` | starts the pipeline with the mounted deployment config |
 | `working_dir` | `/ros2_ws` | the Dockerfile `WORKDIR` and colcon workspace root |
-| `network_mode` | `host` | DDS discovery reaches host-side tools |
+| `networks` | `ros-net` (external `iot_ros-net`) | DDS discovery with the IoT `realsense` / `zenoh_bridge` / `diagnose` containers |
 | `ipc` | `host` | Fast DDS shared-memory transport across the boundary |
 | `deploy.resources.reservations.devices` | `driver: nvidia`, `count: all` | equivalent of `--gpus all` |
 
@@ -176,24 +176,30 @@ process can own the camera, so stop the IoT `realsense` container first
 IoT stack, create it once with `docker network create iot_ros-net`). The
 node numbers can change after a replug; recreate the container if so.
 
-### Host networking and IPC
+### Networking and IPC
 
-`network_mode: host` lets DDS discovery reach `ros2 topic echo` /
-`rqt_image_view` running on the host without multicast translation.
+The service joins the IoT stack's bridge network `iot_ros-net` (created by the
+IoT `./launch.sh`), so DDS discovery reaches the other containers on it
+(`realsense`, `zenoh_bridge`, `diagnose`) with the same `ROS_DOMAIN_ID`. It does
+not use host networking, so ROS tools on the host itself may not discover it;
+inspect topics from inside a container on `iot_ros-net` instead.
 `ipc: host` lets Fast DDS use its shared-memory transport across the container
 boundary.
 
 ### GUI tools (rqt) — opt-in
 
-The deployed container has no display. To look at
-`/skeleton_detection/visualization_image` with `rqt_image_view`, start a
-throwaway container with X11 just for that:
+The image is headless and ships no GUI tools. To look at
+`/skeleton_detection/visualization_image`, use the IoT stack's `diagnose`
+container, which has `rqt_image_view` / `rqt_graph`, X11 and the same
+`iot_ros-net` network:
 
 ```bash
+# from the iot repo root
+./launch.sh up diagnose:=true
 xhost +local:docker      # on the HOST
-docker compose run --rm -e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
-  skeleton_humble ros2 run rqt_image_view rqt_image_view \
-  /skeleton_detection/visualization_image
+docker compose -f docker/docker-compose.yml --project-directory . \
+  exec -it diagnose bash -c \
+  "ros2 run rqt_image_view rqt_image_view /skeleton_detection/visualization_image"
 ```
 
 ### Bind mounts

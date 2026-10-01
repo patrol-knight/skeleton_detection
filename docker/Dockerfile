@@ -2,7 +2,7 @@ FROM ros:humble-ros-base
 
 ARG DEBIAN_FRONTEND=noninteractive
 
-# ROS 2 and system dependen     ies
+# ROS 2 and system dependencies
 RUN apt-get update && apt-get install -y \
         python3-pip \
         python3-dev \
@@ -14,9 +14,7 @@ RUN apt-get update && apt-get install -y \
         ros-humble-vision-opencv \
         ros-humble-sensor-msgs \
         ros-humble-geometry-msgs \
-        ros-humble-realsense2-camera \
-        ros-humble-rqt-image-view \
-        ros-humble-rqt-gui \
+        ros-humble-realsense2-camera-msgs \
         ffmpeg \
         libsm6 \
         libxext6 \
@@ -93,11 +91,10 @@ RUN python3 -m pip install --no-cache-dir \
         "mmdet==3.3.0" \
         "mmpose==1.3.2"
 
-# RealSense Python bindings for direct in-process capture.
-# Version pinned to match the ros-humble-librealsense2 2.58.3 runtime already
-# installed above; PyPI ships a manylinux2014_aarch64 cp310 wheel, so nothing
-# is built from source. Needed because the RTMO node opens the D456 itself
-# instead of consuming a realsense2_camera image topic.
+# RealSense Python bindings for direct in-process capture
+# (input_mode: realsense). The wheel bundles its own librealsense, so no apt
+# librealsense2 / realsense2_camera driver is installed; PyPI ships a
+# manylinux2014_aarch64 cp310 wheel, so nothing is built from source.
 RUN python3 -m pip install --no-cache-dir \
         -c /etc/pip-constraints.txt \
         "pyrealsense2==2.58.3.10794"

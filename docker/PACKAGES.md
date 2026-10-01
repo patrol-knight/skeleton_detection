@@ -51,10 +51,11 @@ Dockerfile:
 | `ros-humble-vision-opencv` | 3.2.1-1jammy | metapackage carrying `cv_bridge` |
 | `ros-humble-sensor-msgs` | 4.9.2-1jammy | `sensor_msgs/Image`, on the visualization output and the offline input path |
 | `ros-humble-geometry-msgs` | 4.9.2-1jammy | `geometry_msgs/Point` — the `position` field of `PersonSkeleton.msg` |
-| `ros-humble-realsense2-camera` | 4.58.3-1jammy | **pulled in for its `librealsense2` dependency and for `realsense2_camera_msgs`, not for the node.** This package never launches a `realsense2_camera` node in any input mode |
-| `ros-humble-realsense2-camera-msgs` | 4.58.3-1jammy | pulled in by the above. Provides `realsense2_camera_msgs/msg/RGBD`, which `input_mode: ros_camera` subscribes to. The MESSAGE package only — the driver itself runs externally |
-| `ros-humble-rqt-image-view` | 1.2.0-2jammy | viewing `/skeleton_detection/visualization_image` |
-| `ros-humble-rqt-gui` | 1.1.9-1jammy | rqt shell for the above |
+| `ros-humble-realsense2-camera-msgs` | 4.58.3-1jammy | provides `realsense2_camera_msgs/msg/RGBD`, which `input_mode: ros_camera` subscribes to. The MESSAGE package only — the `realsense2_camera` driver itself runs externally and is not installed |
+
+No GUI tools (rqt) are installed: the image is headless. View
+`/skeleton_detection/visualization_image` from a separate viewer container,
+e.g. the IoT stack's `diagnose` service (see [docs/docker.md](../docs/docker.md#gui-tools-rqt--opt-in)).
 
 Non-ROS apt packages: `python3-pip`, `python3-dev`, `build-essential`,
 `ca-certificates`, `curl`, `gnupg` (build tooling), and `ffmpeg`, `libsm6`,
@@ -289,18 +290,15 @@ so a restructure of the ReID module fails the build rather than the robot.
 
 | Component | Version | Source |
 |---|---|---|
-| C++ runtime | `ros-humble-librealsense2` **2.58.3**-1jammy | apt, pulled in by `ros-humble-realsense2-camera` |
 | Python bindings | `pyrealsense2` **2.58.3.10794** | PyPI |
 
 `input/realsense_capture.py` opens the D456 in-process, so the **Python**
-bindings are required; the base image only carries the C++ runtime.
+bindings are required. No apt `librealsense2` is installed: the wheel is
+self-contained (it bundles its own librealsense).
 
 **Why this version.** PyPI ships a `manylinux2014_aarch64` cp310 wheel for
 2.58.3.10794, so nothing is built from source and no Intel apt repository is
-needed. The version is pinned to match the apt runtime already present. The
-wheel is self-contained (it bundles its own librealsense), so the two never
-actually have to interoperate — keeping them on the same version avoids
-surprises if both are ever loaded.
+needed.
 
 **Device access:** the wheel uses the V4L2 backend, so the camera's
 `/dev/video*` and `/dev/media*` nodes are enough (verified 2026-09-30); no

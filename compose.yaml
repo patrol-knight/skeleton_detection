@@ -25,9 +25,6 @@ services:
     # privileged mode. Direct `input_mode: realsense` needs extra device
     # access -- see docs/docker.md.
 
-    # REMOVE:
-    # network_mode: host
-
     ipc: host
 
     networks:

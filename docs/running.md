@@ -312,18 +312,20 @@ draw_person_xyz: true
 
 ### Viewing it with rqt
 
-The deployed container is headless, so run the viewer in a throwaway
-container with X11 (see [GUI tools](docker.md#gui-tools-rqt--opt-in)):
+The image is headless and ships no rqt, so run the viewer in the IoT stack's
+`diagnose` container (see [GUI tools](docker.md#gui-tools-rqt--opt-in)):
 
 ```bash
+# from the iot repo root
+./launch.sh up diagnose:=true
 xhost +local:docker      # on the HOST
-docker compose run --rm -e DISPLAY -v /tmp/.X11-unix:/tmp/.X11-unix \
-  skeleton_humble ros2 run rqt_image_view rqt_image_view \
-  /skeleton_detection/visualization_image
+docker compose -f docker/docker-compose.yml --project-directory . \
+  exec -it diagnose bash -c \
+  "ros2 run rqt_image_view rqt_image_view /skeleton_detection/visualization_image"
 ```
 
-Or start `rqt_image_view` / `ros2 run rqt_gui rqt_gui` with no argument and
-pick `/skeleton_detection/visualization_image` from the topic list.
+Or start `rqt_image_view` with no argument and pick
+`/skeleton_detection/visualization_image` from the topic list.
 
 The overlay contains the original RGB image, person bounding boxes, the COCO-17
 joints and their 19 skeleton connections, each person's confidence, ID and
