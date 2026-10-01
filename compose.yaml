@@ -1,0 +1,51 @@
+services:
+  skeleton_humble:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    image: skeleton_humble_dev
+
+    container_name: skeleton_humble
+
+    command:
+      [
+        "ros2",
+        "launch",
+        "skeleton_detection",
+        "skeleton_detection_bringup.launch.py",
+        "config:=/config/skeleton_detection_node.yaml"
+      ]
+
+    working_dir: /ros2_ws
+
+    # Headless and unprivileged: in the default ros_camera deployment the
+    # RealSense is owned by a separate realsense2_camera container and this
+    # one only subscribes to its RGBD topic, so it needs no device access and
+    # no display. GPU access comes from the `deploy` block below, not from
+    # privileged mode. Direct `input_mode: realsense` needs extra device
+    # access -- see docs/docker.md.
+
+    networks:
+      - ros-net
+
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+    # No source mount: the image runs its own built-in install of this
+    # package. Only the deployment config is mounted, so it can be edited or
+    # swapped without rebuilding the image.
+    volumes:
+      - ./config/skeleton_detection_node.yaml:/config/skeleton_detection_node.yaml:ro
+
+    environment:
+      ROS_DOMAIN_ID: 0
+
+networks:
+  ros-net:
+    external: true
+    name: iot_ros-net

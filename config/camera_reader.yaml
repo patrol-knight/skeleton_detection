@@ -1,5 +1,0 @@
-camera_reader_node:
-  ros__parameters:
-    input_topic: /dummy_camera/image_raw
-    video_path: /home/smores/anomaly_detection_ws/data/test_video_1.mp4
-    publish_fps: 10.0

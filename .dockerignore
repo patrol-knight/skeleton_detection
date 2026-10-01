@@ -1,0 +1,47 @@
+# Build context for docker/Dockerfile. The Dockerfile copies docker/ and
+# models/rtmo/ explicitly, then `COPY . /tmp/skeleton_ws/src/skeleton_detection/`
+# for the colcon build of this package. Everything listed here is neither
+# built nor installed by setup.py (which installs only the skeleton_detection/
+# Python package, config/, launch/, package.xml and resource/), so excluding it
+# keeps the context small and stops unrelated edits from re-running the
+# package build.
+
+# VCS / editor / tool state
+.git/
+.gitignore
+.dockerignore
+.vscode/
+.idea/
+.codex/
+*.swp
+*~
+
+# Local colcon output
+build/
+install/
+log/
+
+# Python caches and test artefacts
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+**/.pytest_cache/
+
+# Not used by the build or by the installed package
+test/
+docs/
+README.md
+compose.yaml
+
+# Local-only data: sample images and locally downloaded checkpoints (the image
+# fetches its own weights in docker/fetch_models.py), and generated
+# visualisations.
+data/
+output/
+*.pth
+*.pt
+*.onnx
+*.engine
+*.trt
+*.safetensors

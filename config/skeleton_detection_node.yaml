@@ -1,0 +1,15 @@
+# IoT deployment: consume an EXTERNAL realsense2_camera container's RGBD topic.
+# Only deployment-specific choices are listed; all other values use node defaults.
+
+rtmo_node:
+  ros__parameters:
+    input_mode: ros_camera
+    rgbd_topic: /camera/camera/rgbd
+    output_topic: /skeleton_detection/frame
+
+    enable_tracking: true
+    with_reid: true
+    occlusion_aware_tracking: true
+
+    publish_visualization_image: true
+    draw_person_xyz: true
