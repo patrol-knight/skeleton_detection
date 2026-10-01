@@ -151,8 +151,7 @@ IoT `realsense` container — makes it unavailable here.
 ### Other tools do not see the topics
 
 The container joins the IoT bridge network `iot_ros-net` (not host
-networking), and uses `ipc: host` so Fast DDS shared memory works across the
-boundary. Tools in other containers on `iot_ros-net` (e.g. `diagnose`) see the
+networking). Tools in other containers on `iot_ros-net` (e.g. `diagnose`) see the
 topics; ROS tools running directly on the host may not.
 
 Check from inside the container first — if the topic is not there, it is not a

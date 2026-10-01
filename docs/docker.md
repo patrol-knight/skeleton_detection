@@ -117,7 +117,6 @@ One service, `skeleton_humble`, which is a transcription of the working
 | `command` | `ros2 launch ... config:=/config/skeleton_detection_node.yaml` | starts the pipeline with the mounted deployment config |
 | `working_dir` | `/ros2_ws` | the Dockerfile `WORKDIR` and colcon workspace root |
 | `networks` | `ros-net` (external `iot_ros-net`) | DDS discovery with the IoT `realsense` / `zenoh_bridge` / `diagnose` containers |
-| `ipc` | `host` | Fast DDS shared-memory transport across the boundary |
 | `deploy.resources.reservations.devices` | `driver: nvidia`, `count: all` | equivalent of `--gpus all` |
 
 **`compose up` starts the pipeline.** Every parameter comes from the mounted
@@ -176,15 +175,15 @@ process can own the camera, so stop the IoT `realsense` container first
 IoT stack, create it once with `docker network create iot_ros-net`). The
 node numbers can change after a replug; recreate the container if so.
 
-### Networking and IPC
+### Networking
 
 The service joins the IoT stack's bridge network `iot_ros-net` (created by the
 IoT `./launch.sh`), so DDS discovery reaches the other containers on it
 (`realsense`, `zenoh_bridge`, `diagnose`) with the same `ROS_DOMAIN_ID`. It does
 not use host networking, so ROS tools on the host itself may not discover it;
 inspect topics from inside a container on `iot_ros-net` instead.
-`ipc: host` lets Fast DDS use its shared-memory transport across the container
-boundary.
+Traffic between containers goes over UDP on that network; no `ipc: host` is
+needed, matching the other IoT services.
 
 ### GUI tools (rqt) — opt-in
 
