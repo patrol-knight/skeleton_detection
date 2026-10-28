@@ -65,6 +65,45 @@ class TrackerInitError(RuntimeError):
     """Raised when the tracker or its ReID model cannot be constructed."""
 
 
+# Appearance cost for a track that has no ReID feature yet (born on a frame
+# ReID was skipped). 2.0 is the maximum cosine distance; BoT-SORT's own gates
+# turn it into 1.0 in both association stages (``> appearance_thresh``, also
+# after the ``/ 2.0`` for unconfirmed tracks), and min(iou, 1.0) == iou, so
+# the track is matched on IoU/Kalman alone: no evidence, neither for nor
+# against.
+NO_APPEARANCE_COST = 2.0
+
+
+def install_featureless_guard(botsort_module) -> None:
+    """Make ``botsort_module.embedding_distance`` tolerate featureless tracks.
+
+    BoxMOT 19.0.0 builds the track feature matrix from ``smooth_feat`` with no
+    None check, so a track born on a ReID-skipped frame would crash the next
+    ReID frame. Only the name inside ``boxmot.trackers.botsort.botsort`` is
+    replaced; the installed package is not modified. Idempotent: the stock
+    function is kept on the wrapper and never wrapped twice.
+    """
+    current = getattr(botsort_module, "embedding_distance", None)
+    if current is None:
+        raise TrackerInitError(
+            "boxmot.trackers.botsort.botsort no longer exposes "
+            "embedding_distance; reid_interval cannot guard featureless tracks"
+        )
+    stock = getattr(current, "featureless_guard_stock", current)
+
+    def embedding_distance(tracks, detections, metric="cosine"):
+        if all(t.smooth_feat is not None for t in tracks):
+            return stock(tracks, detections, metric)
+        cost = np.full((len(tracks), len(detections)), NO_APPEARANCE_COST)
+        rows = [i for i, t in enumerate(tracks) if t.smooth_feat is not None]
+        if rows and len(detections):
+            cost[rows] = stock([tracks[i] for i in rows], detections, metric)
+        return cost
+
+    embedding_distance.featureless_guard_stock = stock
+    botsort_module.embedding_distance = embedding_distance
+
+
 class SkeletonTracker:
     """Owns one BoT-SORT instance (and its ReID model) for the node's lifetime.
 
@@ -97,7 +136,13 @@ class SkeletonTracker:
         # OCCLUSION-AWARE TRACKING -- see occlusion_tracking.py; delete with it.
         occlusion_aware_tracking: bool = False,
         occlusion_params: Optional[OcclusionParams] = None,
+        # ReID runs on processed frames 0, N, 2N, ...; the frames between use
+        # BoT-SORT's IoU/Kalman matching and keep the last appearance features.
+        reid_interval: int = 2,
     ) -> None:
+        if int(reid_interval) < 1:
+            raise TrackerInitError(f"reid_interval must be >= 1, got {reid_interval}")
+        self.reid_interval = int(reid_interval)
         self.reid_checkpoint = reid_checkpoint
         self.device = device
         self.with_reid = bool(with_reid)
@@ -121,12 +166,15 @@ class SkeletonTracker:
         reid_model = self._build_reid() if self.with_reid else None
 
         try:
+            import boxmot.trackers.botsort.botsort as botsort_module
             from boxmot.trackers.botsort.botsort import BotSort
         except ImportError as exc:
             raise TrackerInitError(
                 "boxmot is not installed. Install the pinned version: "
                 "pip install -c /etc/pip-constraints.txt boxmot==19.0.0"
             ) from exc
+        if self.with_reid:
+            install_featureless_guard(botsort_module)
 
         botsort_kwargs = dict(
             reid_model=reid_model,
@@ -180,6 +228,7 @@ class SkeletonTracker:
         self._log(
             "info",
             f"BoT-SORT ready (with_reid={self.with_reid}, "
+            f"reid_interval={self.reid_interval}, "
             f"cmc_method={self.cmc_method}, frame_rate={self.frame_rate}, "
             f"device={self.device}, track_buffer={self.track_buffer}, "
             f"max_time_lost={self.max_time_lost} frames "
@@ -338,6 +387,12 @@ class SkeletonTracker:
                 self._frame_visibility(detections),
                 frame_index=frame_index,
                 timestamp=timestamp,
+            )
+        if self.with_reid:
+            # frame_count is BoxMOT's processed-frame counter, read before
+            # update() increments it, so the first frame runs ReID.
+            self.tracker.with_reid = (
+                self.tracker.frame_count % self.reid_interval == 0
             )
         tracks = np.asarray(self.tracker.update(dets, frame_bgr))
         self.last_track_count = int(tracks.shape[0]) if tracks.size else 0
