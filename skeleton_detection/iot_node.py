@@ -1,63 +1,26 @@
-"""ROS 2 node orchestrating the in-process skeleton perception pipeline.
+"""ROS 2 node running the skeleton pipeline in one process.
 
-One node, one process. This module wires the components together and owns the
-ROS surface (parameters, publishers, threads, lifecycle); the actual work lives
-in focused modules::
+    frame -> RTMO -> BoT-SORT (optional) -> per-person XYZ -> SkeletonFrame
+          -> optional visualization image
 
-    input.realsense_capture.RealSenseCapture  camera + latest-frame-wins buffer
-                                         (depth aligned to colour lives here)
-    input.ros_camera_subscriber          RGBD topic of an EXTERNAL
-                                         realsense2_camera driver -> the same
-                                         frame/depth/intrinsics triple
-    inference.rtmo_inference.RTMOInference   RTMO-M model + result parsing
-    inference.person_tracking.SkeletonTracker  BoT-SORT + OSNet ReID
-    inference.depth_estimation           aligned depth + colour intrinsics ->
-                                         per-person XYZ [m] (colour optical frame)
-    output.message_builder               internal -> ROS message conversion
-    output.visualization                 drawing + the two visualization sinks
-    utils.pipeline_stats.PipelineStats   timing/throughput accounting
-
-Per-frame order (tracking runs BEFORE messages are built, so person_id is
-already the persistent track id at publication time, or -1 for a detection
-without one)::
-
-    frame -> RTMO -> [PersonDetection] -> tracker.update() -> track_id attached
-          -> depth_estimation -> detection.position (X, Y, Z) [m]
-                           (depth = sqrt(X^2+Y^2+Z^2), derived from it)
-          -> SkeletonFrame -> /skeleton_detection/frame -> optional visualization
-
-Input modes (``input_mode`` parameter):
-
-``realsense`` -- the D456 is opened by THIS process with pyrealsense2; the BGR
-frame is handed to RTMO and then to BoT-SORT by reference. No RGB image ever
-crosses DDS on the input path.
-
-``ros_topic`` -- regression path: colour-only frames arrive on a
-sensor_msgs/Image topic (the offline image_publisher). No depth, no
-intrinsics, so position/depth stay NaN.
-
-``ros_camera`` -- an EXTERNAL realsense2_camera driver (another container) is
-already running and publishing realsense2_camera_msgs/msg/RGBD. That one
-message carries the colour image, the depth image ALREADY ALIGNED TO COLOUR
-and both CameraInfos, so this node does no synchronization and no alignment of
-its own. This node never launches the driver.
-
-Outputs::
-
-    /skeleton_detection/frame               SkeletonFrame, robot-facing, ~55 Hz
-    /skeleton_detection/visualization_image sensor_msgs/Image, human-facing,
-                                            rate limited and downscaled
+``input_mode`` picks the frame source: ``realsense`` (camera opened here),
+``ros_camera`` (RGBD topic of an external realsense2_camera driver) or
+``ros_topic`` (colour-only image topic, no depth).
 """
 
 import os
-import threading
 import time
+import signal
+import logging
+import warnings
+import threading
 from dataclasses import replace
 from typing import List, Optional
 
 import cv2
-import numpy as np
 import rclpy
+import numpy as np
+
 from cv_bridge import CvBridge
 from rclpy.node import Node
 from rclpy.qos import (
@@ -114,9 +77,7 @@ INPUT_MODE_REALSENSE = "realsense"
 INPUT_MODE_ROS_CAMERA = "ros_camera"
 INPUT_MODES = (INPUT_MODE_REALSENSE, INPUT_MODE_ROS_TOPIC, INPUT_MODE_ROS_CAMERA)
 
-# BoT-SORT scales its track buffer by frame_rate. The tracker sees the
-# PROCESSED rate (~55 Hz), not the 60 Hz camera rate, because the capture
-# buffer is latest-frame-wins. Used when tracking_frame_rate <= 0.
+# The processed rate, not the camera rate: BoT-SORT scales its track buffer by it.
 DEFAULT_TRACKING_FRAME_RATE = 55
 
 
@@ -131,11 +92,7 @@ class RTMONode(Node):
         self.frame_index = 0
         self.stats = PipelineStats()
         self.capture: Optional[RealSenseCapture] = None
-        # input_mode='ros_camera': intrinsics + depth scale are resolved from
-        # the first RGBD message, and only once.
         self._rgbd_configured = False
-        # Colour-stream intrinsics, set once the camera is open. None (e.g. in
-        # ros_topic mode) means no 3D position can be computed.
         self.camera_intrinsics: Optional[CameraIntrinsics] = None
         self.tracker: Optional[SkeletonTracker] = None
         self.visualization_writer: Optional[VisualizationWriter] = None
@@ -145,7 +102,7 @@ class RTMONode(Node):
         self._shutdown_done = False
         self._last_visualization_time = 0.0
 
-        self.get_logger().info(
+        self.get_logger().debug(
             f"rtmo_node starting in input_mode='{self.input_mode}' (PID {os.getpid()})"
         )
 
@@ -155,17 +112,11 @@ class RTMONode(Node):
         self._log_configuration()
         self._create_timers()
 
-    # ------------------------------------------------------------------
-    # parameters
-    # ------------------------------------------------------------------
     def _declare_parameters(self) -> None:
         # --- input selection ---
         self.declare_parameter("input_mode", INPUT_MODE_ROS_TOPIC)
         self.declare_parameter("input_topic", "/dummy_camera/image_raw")
         # --- external RealSense driver (input_mode='ros_camera') ---
-        # Single RGBD topic of an ALREADY RUNNING realsense2_camera node; it
-        # carries colour + aligned depth + CameraInfo together, which is why
-        # no separate colour/depth/camera_info topics are configurable here.
         self.declare_parameter("rgbd_topic", DEFAULT_RGBD_TOPIC)
         # --- RealSense (input_mode='realsense') ---
         self.declare_parameter("realsense_width", 848)
@@ -173,8 +124,6 @@ class RTMONode(Node):
         self.declare_parameter("realsense_fps", 60)
         self.declare_parameter("realsense_color_format", "bgr8")
         self.declare_parameter("realsense_serial", "")
-        # Depth stream, aligned to colour inside RealSenseCapture. Required for
-        # PersonSkeleton.position/depth; with it off both are NaN.
         self.declare_parameter("realsense_enable_depth", True)
         self.declare_parameter("camera_frame_id", "camera_color_optical_frame")
         # --- outputs ---
@@ -184,54 +133,36 @@ class RTMONode(Node):
         self.declare_parameter("checkpoint", DEFAULT_CHECKPOINT)
         self.declare_parameter("device", "cuda:0")
         self.declare_parameter("person_score_threshold", 0.3)
-        # --- per-person depth (see inference/depth_estimation.py) ---
-        # A keypoint votes on the person's depth only at/above this RTMO
-        # per-joint confidence.
+        # --- per-person depth ---
         self.declare_parameter("depth_keypoint_score_threshold", 0.3)
-        # Optional metric sanity bounds; <= 0 disables the bound. Zero, NaN and
-        # infinite depth samples are rejected regardless.
+        # <= 0 disables the bound
         self.declare_parameter("depth_min_m", 0.0)
         self.declare_parameter("depth_max_m", 0.0)
         # --- tracking (BoT-SORT + ReID, in this same process) ---
         self.declare_parameter("enable_tracking", False)
         self.declare_parameter("with_reid", True)
         self.declare_parameter("reid_checkpoint", DEFAULT_REID_CHECKPOINT)
-        # <= 0 -> DEFAULT_TRACKING_FRAME_RATE (the measured pipeline rate, not
-        # the camera rate); scales BoT-SORT's lost-track buffer.
+        # <= 0 uses DEFAULT_TRACKING_FRAME_RATE
         self.declare_parameter("tracking_frame_rate", 0.0)
-        # 'none' (default), 'ecc', 'orb', 'sift' or 'sof'. BoxMOT wants Python
-        # None to disable CMC and rejects the string, so 'none' is mapped.
+        # none, ecc, orb, sift or sof
         self.declare_parameter("cmc_method", "none")
         self.declare_parameter("track_high_thresh", 0.5)
         self.declare_parameter("new_track_thresh", 0.6)
-        # 90 for the ID-switch investigation (was 30). BoxMOT scales it:
-        # max_time_lost = int(frame_rate / 30.0 * track_buffer), so at the
-        # default tracking_frame_rate of 55 this is 165 frames (~3.0 s).
+        # max_time_lost = frame_rate / 30 * track_buffer frames
         self.declare_parameter("track_buffer", 90)
         self.declare_parameter("match_thresh", 0.8)
         self.declare_parameter("appearance_thresh", 0.25)
-        # 0.7, not BoxMOT's 0.5. The proximity gate masks ReID when
-        # iou_dist > proximity_thresh, and iou_dist = 1 - IoU, so 0.7 keeps
-        # appearance usable down to IoU 0.30 instead of IoU 0.50. RAISING this
-        # value relaxes the gate; lowering it to 0.3 would tighten it to
-        # IoU >= 0.70.
+        # ReID is used while IoU >= 1 - proximity_thresh
         self.declare_parameter("proximity_thresh", 0.7)
-        # OCCLUSION-AWARE TRACKING (delete with occlusion_tracking.py) ------
-        # Off by default: with it off a stock BotSort is constructed and the
-        # tracker behaves exactly as before.
+        # --- occlusion-aware tracking (experimental) ---
         self.declare_parameter("occlusion_aware_tracking", False)
-        # A COCO joint counts as visible at or above this per-keypoint score.
         self.declare_parameter("keypoint_visibility_threshold", 0.30)
-        # visible_ratio below this => OCCLUDED. This is the ONLY signal:
-        # bbox width was removed because a person turning sideways halves
-        # their box width while remaining fully visible.
+        # visible joint ratio below this => occluded
         self.declare_parameter("visible_ratio_threshold", 0.50)
-        # The two below size the INFORMATIONAL bbox-width history written to
-        # the debug log. They do not affect classification or tracking.
+        # debug-log only, no effect on tracking
         self.declare_parameter("normal_bbox_history_size", 15)
         self.declare_parameter("min_normal_width_samples", 5)
-        # -------------------------------------------------------------------
-        # --- visualisation: human-facing only, off by default ---
+        # --- visualization ---
         self.declare_parameter("publish_visualization_image", False)
         self.declare_parameter(
             "visualization_topic", "/skeleton_detection/visualization_image"
@@ -242,12 +173,11 @@ class RTMONode(Node):
         self.declare_parameter("visualization_reliability", "best_effort")
         self.declare_parameter("joint_score_threshold", 0.3)
         self.declare_parameter("draw_joint_scores", False)
-        # DEBUG: append each person's camera-frame XYZ to the overlay label.
         self.declare_parameter("draw_person_xyz", False)
         self.declare_parameter("save_visualization_images", False)
         self.declare_parameter("visualization_output_dir", DEFAULT_VISUALIZATION_DIR)
         self.declare_parameter("visualization_image_format", "jpg")
-        # --- logging / benchmarking ---
+        # --- logging ---
         self.declare_parameter("stats_log_period_sec", 1.0)
         self.declare_parameter("log_every_frame", False)
         self.declare_parameter("run_duration_sec", 0.0)
@@ -275,8 +205,7 @@ class RTMONode(Node):
 
         self.realsense_enable_depth = bool(value("realsense_enable_depth"))
         self.depth_params = DepthParams(
-            # Filled in from the device once the camera is open; 1.0 would mean
-            # "the image is already in meters".
+            # set once the depth source is known
             depth_scale=1.0,
             keypoint_score_threshold=float(
                 value("depth_keypoint_score_threshold")
@@ -294,7 +223,6 @@ class RTMONode(Node):
             if tracking_frame_rate > 0
             else DEFAULT_TRACKING_FRAME_RATE
         )
-        # OCCLUSION-AWARE TRACKING
         self.occlusion_aware_tracking = bool(value("occlusion_aware_tracking"))
         self.occlusion_params = OcclusionParams(
             keypoint_visibility_threshold=float(
@@ -316,8 +244,7 @@ class RTMONode(Node):
             )
 
         cmc = str(value("cmc_method")).lower().strip()
-        # BoxMOT's get_cmc_method() accepts None but raises on the string
-        # "none"; map the friendly parameter value to the API's contract.
+        # BoxMOT wants None, and raises on the string "none"
         self.cmc_method = None if cmc in ("", "none") else cmc
 
         self.publish_visualization_image = bool(value("publish_visualization_image"))
@@ -350,9 +277,6 @@ class RTMONode(Node):
         self.log_every_frame = bool(value("log_every_frame"))
         self.run_duration_sec = float(value("run_duration_sec"))
 
-    # ------------------------------------------------------------------
-    # construction
-    # ------------------------------------------------------------------
     def _build_components(self) -> None:
         try:
             self.inference = RTMOInference(
@@ -388,7 +312,6 @@ class RTMONode(Node):
                         self.get_parameter("proximity_thresh").value
                     ),
                     logger=self.get_logger(),
-                    # OCCLUSION-AWARE TRACKING
                     occlusion_aware_tracking=self.occlusion_aware_tracking,
                     occlusion_params=self.occlusion_params,
                 )
@@ -405,13 +328,11 @@ class RTMONode(Node):
         self._legend = legend_for(self.enable_tracking, self.with_reid)
 
     def _create_publishers(self) -> None:
-        # Robot-facing output: reliable, keep-last depth 10 (unchanged).
         self.frame_publisher = self.create_publisher(
             SkeletonFrame, self.output_topic, 10
         )
 
-        # Human-facing output: keep-last depth 1 so a slow viewer can never
-        # make stale frames pile up.
+        # Depth 1 so a slow viewer can't pile up stale frames.
         self.visualization_publisher = None
         if self.publish_visualization_image:
             reliability = (
@@ -431,26 +352,20 @@ class RTMONode(Node):
             )
 
     def _start_input(self) -> None:
-        """Start exactly one of the three input backends.
-
-        The only place input_mode is branched on. Each backend ends up calling
-        the same :meth:`_process_frame` seam, so nothing downstream of here
-        knows where a frame came from.
-        """
+        """Start the input backend; each one feeds :meth:`_process_frame`."""
         self.subscription = None
-        self.get_logger().info(f"Input mode: {self.input_mode}")
         if self.input_mode == INPUT_MODE_ROS_TOPIC:
             self.subscription = self.create_subscription(
                 Image, self.input_topic, self._on_image, 10
             )
-            self.get_logger().info(f"Subscribed to {self.input_topic}")
+            self.get_logger().info(f"Input: {self.input_topic} (ros_topic)")
         elif self.input_mode == INPUT_MODE_ROS_CAMERA:
             self._start_ros_camera()
         else:
             self._start_realsense()
 
     def _start_realsense(self) -> None:
-        """Open the camera in THIS process and start the inference worker."""
+        """Open the camera in this process and start the inference worker."""
         self.capture = RealSenseCapture(
             width=int(self.get_parameter("realsense_width").value),
             height=int(self.get_parameter("realsense_height").value),
@@ -467,12 +382,10 @@ class RTMONode(Node):
             raise RuntimeError(f"RealSense capture could not start: {exc}") from exc
 
         if self.realsense_enable_depth:
-            # The capture thread hands over RAW Z16; this is the only place the
-            # device's meters-per-unit scale enters the depth pipeline.
             self.depth_params = replace(
                 self.depth_params, depth_scale=self.capture.depth_scale
             )
-            self.get_logger().info(
+            self.get_logger().debug(
                 "Depth ENABLED: z16 aligned to colour in RealSenseCapture, "
                 f"depth_scale={self.capture.depth_scale:.6f} m/unit; "
                 "person Z = median of per-joint 3x3 Z medians over "
@@ -492,13 +405,12 @@ class RTMONode(Node):
                 "PersonSkeleton.position and depth are NaN for every person"
             )
 
-        # Read once by RealSenseCapture.start() from the ACTIVE colour stream.
         self.camera_intrinsics = self.capture.camera_intrinsics
         intrinsics = self.camera_intrinsics
         raw = self.capture.color_intrinsics
         if intrinsics is not None:
             coeffs = ", ".join(f"{c:.4f}" for c in getattr(raw, "coeffs", []))
-            self.get_logger().info(
+            self.get_logger().debug(
                 f"Colour intrinsics ({intrinsics.width}x{intrinsics.height}): "
                 f"fx={intrinsics.fx:.2f} fy={intrinsics.fy:.2f} "
                 f"cx(ppx)={intrinsics.cx:.2f} cy(ppy)={intrinsics.cy:.2f} "
@@ -519,36 +431,24 @@ class RTMONode(Node):
             target=self._inference_loop, name="rtmo_inference", daemon=True
         )
         self._worker.start()
-        self.get_logger().info(
-            "RealSense capture + RTMO"
-            + (" + BoT-SORT" if self.tracker is not None else "")
-            + f" running in this process (PID {os.getpid()}); "
-            "no realsense2_camera node, no image topic on the input path"
-        )
+        self.get_logger().info("Input: RealSense opened in this process (realsense)")
 
     def _start_ros_camera(self) -> None:
-        """Subscribe to the RGBD topic of an EXTERNAL realsense2_camera node.
+        """Subscribe to the RGBD topic of an external realsense2_camera driver.
 
-        Nothing is launched here and no camera is opened: the driver is assumed
-        to be already running in another container with ``enable_rgbd``,
-        ``enable_sync`` and ``align_depth.enable`` on. Because that one message
-        carries colour, ALIGNED depth and the colour CameraInfo together, this
-        node does no synchronization and no alignment of its own.
-
-        Intrinsics and the depth scale are not known until the first message
-        arrives, so they are resolved once in :meth:`_on_rgbd` rather than here.
+        The driver must run with ``enable_rgbd``, ``enable_sync`` and
+        ``align_depth.enable``; intrinsics come from the first message.
         """
         rgbd_type = import_rgbd_message()
 
-        # Sensor-data QoS: a RELIABLE subscription would never match the
-        # driver's BEST_EFFORT publisher and would sit silent forever.
+        # A RELIABLE subscription would never match the driver's BEST_EFFORT publisher.
         self._rgbd_configured = False
         self.subscription = self.create_subscription(
             rgbd_type, self.rgbd_topic, self._on_rgbd, rgbd_qos()
         )
 
-        self.get_logger().info(f"RGBD topic: {self.rgbd_topic}")
-        self.get_logger().info(
+        self.get_logger().info(f"Input: {self.rgbd_topic} (ros_camera)")
+        self.get_logger().debug(
             "Consuming realsense2_camera_msgs/msg/RGBD from an EXTERNAL "
             "realsense2_camera driver (not launched by this node); "
             "QoS=best_effort/keep_last/depth=1. The driver owns colour, "
@@ -563,14 +463,10 @@ class RTMONode(Node):
             )
 
     def _configure_from_rgbd(self, depth_msg, camera_info) -> None:
-        """One-time setup from the first RGBD message: intrinsics + depth scale.
-
-        Kept out of :meth:`_on_rgbd` so the per-frame path stays a straight
-        line, and so this runs exactly once no matter how fast frames arrive.
-        """
+        """One-time setup from the first RGBD message: intrinsics + depth scale."""
         self.camera_intrinsics = intrinsics_from_camera_info(camera_info)
         intrinsics = self.camera_intrinsics
-        self.get_logger().info(
+        self.get_logger().debug(
             f"Colour intrinsics from CameraInfo.k "
             f"({intrinsics.width}x{intrinsics.height}): "
             f"fx={intrinsics.fx:.2f} fy={intrinsics.fy:.2f} "
@@ -581,15 +477,15 @@ class RTMONode(Node):
             "PersonSkeleton.depth = sqrt(x^2+y^2+z^2)"
         )
 
-        # Catch a driver started without align_depth.enable ONCE, here,
-        # rather than once per person per frame inside the depth module.
         validate_depth_alignment(depth_msg.width, depth_msg.height, intrinsics)
 
-        # The driver publishes aligned depth as 16UC1 millimetres, so the scale
-        # is a property of the ENCODING here, not something read from a device.
         depth_scale = depth_scale_for_encoding(depth_msg.encoding)
         self.depth_params = replace(self.depth_params, depth_scale=depth_scale)
         self.get_logger().info(
+            f"First RGBD frame: {intrinsics.width}x{intrinsics.height}, "
+            f"depth {depth_msg.encoding} aligned"
+        )
+        self.get_logger().debug(
             f"Depth ENABLED: '{depth_msg.encoding}' already aligned to colour "
             f"by the external driver, depth_scale={depth_scale:.6f} m/unit "
             "(no rs.align in this process); person Z = median of per-joint "
@@ -598,10 +494,7 @@ class RTMONode(Node):
         )
 
     def _on_rgbd(self, msg) -> None:
-        """RGBD message -> (BGR frame, header, aligned depth) -> the pipeline.
-
-        No per-frame logging: this runs at the driver's frame rate.
-        """
+        """RGBD message -> (BGR frame, header, aligned depth) -> the pipeline."""
         try:
             rgb_msg, depth_msg, camera_info = rgbd_parts(msg)
 
@@ -612,8 +505,7 @@ class RTMONode(Node):
             frame_bgr = self.bridge.imgmsg_to_cv2(rgb_msg, desired_encoding="bgr8")
             depth_image = depth_array_from_msg(depth_msg, self.bridge)
         except RGBDInputError as exc:
-            # A malformed/unusable stream is fatal: publishing skeletons with
-            # silently wrong depth would be worse than stopping.
+            # Fatal: silently wrong depth is worse than stopping.
             self._fatal_error = f"RGBD input unusable: {exc}"
             self.get_logger().fatal(self._fatal_error)
             raise SystemExit from exc
@@ -621,9 +513,6 @@ class RTMONode(Node):
             self.get_logger().error(f"RGBD conversion failed: {exc}")
             return
 
-        # The driver's own stamp and optical frame are kept: they describe the
-        # real capture time and frame of this data. camera_frame_id is only a
-        # fallback for a driver that leaves frame_id empty.
         header = rgb_msg.header
         if not header.frame_id:
             header.frame_id = self.camera_frame_id
@@ -641,45 +530,18 @@ class RTMONode(Node):
             self.get_logger().error(f"Frame processing failed: {exc}")
 
     def _log_configuration(self) -> None:
-        self.get_logger().info(f"Publishing SkeletonFrame on {self.output_topic}")
-        if self.tracker is not None:
-            self.get_logger().info(
-                f"Tracking ENABLED: BoT-SORT with_reid={self.with_reid}, "
-                f"frame_rate={self.tracking_frame_rate}, cmc={self.cmc_method}, "
-                f"track_buffer={self.tracker.track_buffer} -> "
-                f"max_time_lost={self.tracker.max_time_lost} frames; "
-                + person_id_semantics(True)
-            )
-            if self.occlusion_aware_tracking:
-                # OCCLUSION-AWARE TRACKING: one line; the numbers already went
-                # out from SkeletonTracker.
-                self.get_logger().warning(
-                    "EXPERIMENTAL occlusion-aware tracking is ON: OCCLUDED "
-                    "observations no longer update the Kalman motion state or "
-                    "the ReID appearance state. Turn it off with "
-                    "occlusion_aware_tracking: false in the config."
-                )
-        else:
-            self.get_logger().info(
-                "Tracking disabled (enable_tracking=false); "
-                + person_id_semantics(False)
-            )
+        output = f"Output: {self.output_topic}"
         if self.visualization_publisher is not None:
             rate = (
                 f"{self.visualization_fps:.1f} Hz"
                 if self.visualization_fps > 0
-                else "every processed frame (no rate limit)"
+                else "unthrottled"
             )
-            self.get_logger().info(
-                f"Publishing visualization image on {self.visualization_topic} "
-                f"at {self.visualization_width}x{self.visualization_height}, "
-                f"{rate}, bgr8, QoS={self.visualization_reliability}/keep_last/depth=1"
-            )
-        else:
-            self.get_logger().info(
-                "Visualization image publishing disabled "
-                "(publish_visualization_image=false)"
-            )
+            output += f", visualization {self.visualization_topic} @ {rate}"
+        self.get_logger().info(output)
+        if self.tracker is None:
+            self.get_logger().info("Tracking disabled")
+        self.get_logger().debug(person_id_semantics(self.tracker is not None))
         if self.visualization_writer is not None:
             self.get_logger().info(
                 f"Saving annotated {self.visualization_image_format.upper()} files "
@@ -702,9 +564,6 @@ class RTMONode(Node):
             )
             self.create_timer(self.run_duration_sec, self._deadline_reached)
 
-    # ------------------------------------------------------------------
-    # input handling
-    # ------------------------------------------------------------------
     def _inference_loop(self) -> None:
         """Consume the newest captured frame and run the shared pipeline."""
         while not self._stop_event.is_set():
@@ -740,8 +599,6 @@ class RTMONode(Node):
             return
 
         try:
-            # ros_topic mode carries colour only (no depth, no intrinsics), so
-            # position and depth stay unavailable (NaN) on this path.
             self._process_frame(frame_bgr, msg.header, None)
         except NotImplementedError as exc:
             self.get_logger().fatal(
@@ -756,20 +613,15 @@ class RTMONode(Node):
         self.get_logger().info("run_duration_sec elapsed; shutting down")
         raise SystemExit
 
-    # ------------------------------------------------------------------
-    # the pipeline
-    # ------------------------------------------------------------------
     def _process_frame(
         self,
         frame_bgr: np.ndarray,
         header: Header,
         depth_image: Optional[np.ndarray] = None,
     ) -> None:
-        """RTMO -> tracking -> depth -> messages -> publish -> visualization.
+        """RTMO -> tracking -> depth -> publish -> visualization.
 
-        ``depth_image`` is the RAW Z16 frame ALREADY ALIGNED TO COLOUR by
-        :class:`~skeleton_detection.input.realsense_capture.RealSenseCapture`, or
-        ``None`` when no depth stream is running.
+        ``depth_image`` is raw depth aligned to colour, or ``None``.
         """
         total_start = time.perf_counter()
 
@@ -777,9 +629,6 @@ class RTMONode(Node):
         detections: List[PersonDetection] = self.inference.infer(frame_bgr)
         inference_ms = (time.perf_counter() - start) * 1000.0
 
-        # Tracking runs on the SAME in-memory frame and the pre-conversion xyxy
-        # boxes, before any message is built, so person_id is already the
-        # persistent track id when the frame is published.
         tracking_ms = 0.0
         active_tracks = 0
         if self.tracker is not None:
@@ -787,17 +636,12 @@ class RTMONode(Node):
             detections = self.tracker.update(
                 detections,
                 frame_bgr,
-                # OCCLUSION-AWARE TRACKING: carried into the per-frame
-                # visibility context. Read, never acted upon by the tracker.
                 frame_index=self.frame_index,
                 timestamp=time.time(),
             )
             tracking_ms = (time.perf_counter() - start) * 1000.0
             active_tracks = self.tracker.active_tracks
 
-        # Position is attached AFTER tracking and BEFORE the message is built,
-        # so person_id and position/depth in the published message describe
-        # the same detection. It never modifies boxes, ids or keypoints.
         self._attach_person_position(detections, depth_image)
 
         frame_msg = build_skeleton_frame(header, self.frame_index, detections)
@@ -832,15 +676,7 @@ class RTMONode(Node):
     def _attach_person_position(
         self, detections: List[PersonDetection], depth_image: Optional[np.ndarray]
     ) -> None:
-        """Fill ``detection.position`` [m, colour optical frame] per detection.
-
-        Thin wrapper only: the estimation itself lives in
-        :mod:`skeleton_detection.inference.depth_estimation`. ``detection.depth`` (the
-        Euclidean distance) is derived from the position, so it is never set
-        here. With no depth image or no intrinsics every detection gets the
-        all-NaN position, which the message and the overlay both render as
-        "unavailable".
-        """
+        """Fill ``detection.position`` [m, colour optical frame]; NaN without depth."""
         if depth_image is None or self.camera_intrinsics is None:
             for detection in detections:
                 detection.position = NO_POSITION
@@ -859,12 +695,7 @@ class RTMONode(Node):
     def _handle_visualization(
         self, frame_bgr: np.ndarray, persons, header: Header
     ) -> None:
-        """Render at most once per frame, and only when a sink needs it.
-
-        The SkeletonFrame is already published by this point, so nothing here
-        can throttle the robot-facing topic. At ~55 Hz inference and 10 Hz
-        visualization roughly 4 of every 5 frames skip drawing entirely.
-        """
+        """Render at most once per frame, and only when a sink needs it."""
         now = time.perf_counter()
         due = self.visualization_publisher is not None and (
             now - self._last_visualization_time >= self._visualization_period
@@ -877,8 +708,6 @@ class RTMONode(Node):
             f"frame {self.frame_index:06d} | {width}x{height} | "
             f"persons: {len(persons)}"
         )
-        # Drawn at the ORIGINAL resolution so RTMO coordinates are used as-is;
-        # any downscale happens afterwards on the finished overlay.
         overlay = draw_skeleton_overlay(
             frame_bgr,
             persons,
@@ -891,10 +720,7 @@ class RTMONode(Node):
 
         if due:
             self._publish_visualization_image(overlay, header)
-            # Advance the schedule by exactly one period rather than resetting
-            # to "now": visualization can only be emitted on a frame boundary,
-            # so resetting would always round the interval up and run
-            # systematically slow.
+            # Advance by one period, not to "now", or the rate runs slow.
             self._last_visualization_time += self._visualization_period
             if now - self._last_visualization_time > self._visualization_period:
                 self._last_visualization_time = now
@@ -923,9 +749,6 @@ class RTMONode(Node):
         self.visualization_publisher.publish(image_msg)
         self.stats.record_visualization()
 
-    # ------------------------------------------------------------------
-    # reporting
-    # ------------------------------------------------------------------
     def _log_stats(self) -> None:
         if self._fatal_error is not None:
             raise SystemExit
@@ -951,8 +774,7 @@ class RTMONode(Node):
         self.get_logger().info(" ".join(parts))
 
     def _emit(self, message: str) -> None:
-        """Log via ROS when possible, else print (Ctrl+C tears the context down
-        before destroy_node runs)."""
+        """Log via ROS when possible; Ctrl+C tears the context down first."""
         if rclpy.ok():
             self.get_logger().info(message)
         else:
@@ -1021,9 +843,6 @@ class RTMONode(Node):
             ]
         self._emit("\n".join(lines))
 
-    # ------------------------------------------------------------------
-    # shutdown
-    # ------------------------------------------------------------------
     def shutdown_pipeline(self) -> None:
         """Stop worker thread and camera. Idempotent; safe from any thread."""
         if self._shutdown_done:
@@ -1049,7 +868,20 @@ class RTMONode(Node):
         return super().destroy_node()
 
 
+def quiet_third_party_output() -> None:
+    """Hide library INFO chatter and warnings; their errors still show."""
+    try:
+        import boxmot.utils  # noqa: F401  resets its logger to INFO on import
+    except ImportError:
+        pass
+    logging.getLogger("boxmot").setLevel(logging.WARNING)
+    for module in ("mmpose", "mmengine", "torch"):
+        warnings.filterwarnings("ignore", category=UserWarning, module=module)
+        warnings.filterwarnings("ignore", category=FutureWarning, module=module)
+
+
 def main(args=None) -> None:
+    quiet_third_party_output()
     rclpy.init(args=args)
     node = RTMONode()
     try:
@@ -1057,6 +889,9 @@ def main(args=None) -> None:
     except (KeyboardInterrupt, SystemExit):
         pass
     finally:
+        # ros2 launch and the terminal both send SIGINT; don't let the second
+        # one abort cleanup.
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

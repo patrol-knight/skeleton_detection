@@ -175,8 +175,8 @@ inside but not outside, confirm both sides are on that network and use the same
 
 ### `input_mode: ros_camera` starts but no frames are processed
 
-The node logs `Input mode: ros_camera` and `RGBD topic: ...` and then stays
-quiet — no intrinsics line, no statistics.
+The node logs `Input: ... (ros_camera)` and then stays quiet — no
+`First RGBD frame` line, no statistics.
 
 1. **Does the topic exist?** `ros2 topic list | grep rgbd`. If not, the
    external driver was started without `enable_rgbd:=true` (which itself
@@ -265,8 +265,9 @@ overlay carries a matching legend, so a saved image is never ambiguous.
 
 ### ID switches
 
-Start by reading the start-up log — `SkeletonTracker` prints every association
-gate it is running with:
+Start by reading the debug-level start-up log
+(`--ros-args --log-level rtmo_node:=debug`) — `SkeletonTracker` prints every
+association gate it is running with:
 
 ```text
 BoT-SORT ready (with_reid=..., cmc_method=..., frame_rate=..., track_buffer=90,
@@ -306,14 +307,13 @@ means departing from a known-good baseline.
 ### Occlusion-aware tracking diagnostics
 
 It requires `enable_tracking: true`; on its own it does nothing. When it is on,
-the node logs a warning so it can never be on unnoticed:
+the start-up line says so:
 
 ```text
-EXPERIMENTAL occlusion-aware tracking is ON: OCCLUDED observations no longer
-update the Kalman motion state or the ReID appearance state.
+BoT-SORT ready (ReID every 2 frames, occlusion-aware (experimental))
 ```
 
-and `SkeletonTracker` logs the thresholds actually in use.
+and `SkeletonTracker` logs the thresholds in use at debug level.
 
 - **Nothing is ever classified `OCCLUDED`** → `visible_ratio_threshold` (0.50)
   is too low for your scene, or `keypoint_visibility_threshold` (0.30) is so
@@ -349,7 +349,7 @@ of likelihood:
 4. `depth_min_m` / `depth_max_m` are rejecting everything. Set them to `0.0` to
    disable the bounds.
 
-Confirm depth is actually on — the node logs it at start-up:
+Confirm depth is actually on — the node logs it at debug level at start-up:
 
 ```text
 Depth ENABLED: z16 aligned to colour in RealSenseCapture, depth_scale=0.001000 m/unit; ...

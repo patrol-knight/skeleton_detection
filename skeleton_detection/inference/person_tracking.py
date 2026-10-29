@@ -1,43 +1,8 @@
-"""In-process BoT-SORT + OSNet ReID tracking for RTMO detections.
+"""BoT-SORT + OSNet ReID tracking for RTMO detections (no ROS code).
 
-This module deliberately contains no ROS code. It receives the detections
-RTMO produced and the SAME in-memory BGR frame RTMO ran on, and hands back
-persistent track ids. Nothing is serialized, published or copied between
-processes: the frame is passed by reference from the capture thread through
-inference into the tracker.
-
-Why BoxMOT gets the frame
--------------------------
-With ``with_reid=True`` BoT-SORT crops each detection out of the frame itself
-and runs the ReID backbone on those crops (``model.get_features(boxes, img)``).
-That is why ``update()`` takes the image: it is an appearance-model input, not
-an image transport.
-
-Detection contract (verified against BoxMOT 19.0.0
-``boxmot/trackers/detection_layout.py``)::
-
-    in : (N, 6) float32  [x1, y1, x2, y2, conf, cls]
-    out: (M, 8) float32  [x1, y1, x2, y2, track_id, conf, cls, det_ind]
-
-``det_ind`` indexes back into the array we passed in, so a track maps to the
-exact detection -- and therefore the exact 17 keypoints -- that produced it. No
-second IoU matching step is needed or performed.
-
-Frame-rate note
----------------
-The camera runs at 60 FPS but the capture buffer is latest-frame-wins, so the
-tracker sees only the ~40-55 FPS the pipeline actually processes, with
-occasional gaps where stale frames were dropped. ``frame_rate`` is therefore
-configured from the measured pipeline rate, not from the camera rate; it scales
-BoT-SORT's internal track buffer (how long a lost track survives), so passing
-60 would make tracks live ~10% longer than intended in wall-clock terms.
-
-Concretely, BoxMOT 19.0.0 derives the lost-track lifetime as::
-
-    max_time_lost = int(frame_rate / 30.0 * track_buffer)
-
-so ``frame_rate=55`` with ``track_buffer=90`` gives ``max_time_lost=165``
-frames, i.e. about 3.0 s of wall clock at the processed rate.
+BoxMOT gets the frame because ReID crops each detection from it. ``det_ind``
+in its output indexes the detections we passed, so each track maps back to
+the exact skeleton that produced it.
 """
 
 import os.path as osp
@@ -50,35 +15,23 @@ from .occlusion_tracking import OcclusionParams, compute_detection_visibility
 from .rtmo_inference import PersonDetection
 from ..utils.model_paths import DEFAULT_REID_CHECKPOINT
 
-# BoxMOT's person class id. Every RTMO detection is a person.
 PERSON_CLASS_ID = 0
-
-# Columns of the (N, 6) detection array BoxMOT expects.
+# [x1, y1, x2, y2, conf, cls]
 DETECTION_COLUMNS = 6
-
 
 
 class TrackerInitError(RuntimeError):
     """Raised when the tracker or its ReID model cannot be constructed."""
 
 
-# Appearance cost for a track that has no ReID feature yet (born on a frame
-# ReID was skipped). 2.0 is the maximum cosine distance; BoT-SORT's own gates
-# turn it into 1.0 in both association stages (``> appearance_thresh``, also
-# after the ``/ 2.0`` for unconfirmed tracks), and min(iou, 1.0) == iou, so
-# the track is matched on IoU/Kalman alone: no evidence, neither for nor
-# against.
+# Max cosine distance: a track without a ReID feature yet is matched on IoU alone.
 NO_APPEARANCE_COST = 2.0
 
 
 def install_featureless_guard(botsort_module) -> None:
-    """Make ``botsort_module.embedding_distance`` tolerate featureless tracks.
+    """Make ``embedding_distance`` tolerate tracks born on a ReID-skipped frame.
 
-    BoxMOT 19.0.0 builds the track feature matrix from ``smooth_feat`` with no
-    None check, so a track born on a ReID-skipped frame would crash the next
-    ReID frame. Only the name inside ``boxmot.trackers.botsort.botsort`` is
-    replaced; the installed package is not modified. Idempotent: the stock
-    function is kept on the wrapper and never wrapped twice.
+    BoxMOT 19.0.0 doesn't None-check ``smooth_feat`` and would crash. Idempotent.
     """
     current = getattr(botsort_module, "embedding_distance", None)
     if current is None:
@@ -102,11 +55,7 @@ def install_featureless_guard(botsort_module) -> None:
 
 
 class SkeletonTracker:
-    """Owns one BoT-SORT instance (and its ReID model) for the node's lifetime.
-
-    Both the ReID backbone and the tracker are built once in ``__init__``;
-    nothing is constructed per frame.
-    """
+    """One BoT-SORT instance and its ReID model, built once."""
 
     def __init__(
         self,
@@ -118,23 +67,14 @@ class SkeletonTracker:
         half: bool = False,
         track_high_thresh: float = 0.5,
         new_track_thresh: float = 0.6,
-        # 90 (not BoxMOT's default 30) for the ID-switch investigation: it
-        # makes buffer expiry an unlikely explanation for an ID switch after a
-        # short occlusion. max_time_lost = int(frame_rate / 30.0 * 90).
         track_buffer: int = 90,
         match_thresh: float = 0.8,
         appearance_thresh: float = 0.25,
-        # 0.7 (not BoxMOT's default 0.5) so appearance can still contribute at
-        # a moderate IoU. The gate masks ReID when iou_dist > proximity_thresh
-        # and iou_dist == 1 - IoU, so 0.7 keeps ReID eligible down to IoU 0.30
-        # instead of IoU 0.50. Raising this value RELAXES the gate.
         proximity_thresh: float = 0.7,
         logger=None,
-        # OCCLUSION-AWARE TRACKING -- see occlusion_tracking.py; delete with it.
         occlusion_aware_tracking: bool = False,
         occlusion_params: Optional[OcclusionParams] = None,
-        # ReID runs on processed frames 0, N, 2N, ...; the frames between use
-        # BoT-SORT's IoU/Kalman matching and keep the last appearance features.
+        # ReID on every Nth frame; frames between match on IoU/Kalman only
         reid_interval: int = 2,
     ) -> None:
         if int(reid_interval) < 1:
@@ -150,15 +90,11 @@ class SkeletonTracker:
         self.reid_load_seconds = 0.0
         self.track_buffer = int(track_buffer)
 
-        # OCCLUSION-AWARE TRACKING ---------------------------------------
         self.occlusion_aware_tracking = bool(occlusion_aware_tracking)
         self.occlusion_params = occlusion_params or OcclusionParams()
         self.occlusion_logger = None
-        # Counts detections whose RTMO keypoint scores were unusable, so the
-        # fallback is visible in the ROS log instead of being silent.
         self._visibility_fallbacks = 0
         self._visibility_fallback_logged = 0
-        # ----------------------------------------------------------------
 
         reid_model = self._build_reid() if self.with_reid else None
 
@@ -176,8 +112,6 @@ class SkeletonTracker:
         botsort_kwargs = dict(
             reid_model=reid_model,
             with_reid=self.with_reid,
-            # BoxMOT accepts None to disable camera-motion compensation but
-            # rejects the string "none"; the node maps its parameter for us.
             cmc_method=self.cmc_method,
             frame_rate=self.frame_rate,
             track_high_thresh=track_high_thresh,
@@ -189,10 +123,6 @@ class SkeletonTracker:
         )
 
         try:
-            # OCCLUSION-AWARE TRACKING: a BotSort subclass whose STracks refuse
-            # to feed an OCCLUDED observation into the Kalman measurement
-            # update or into the ReID feature update. Off -> `base_cls` stays
-            # stock BotSort and nothing from occlusion_tracking.py runs.
             base_cls = BotSort
             if self.occlusion_aware_tracking:
                 from .occlusion_tracking import make_occlusion_aware_botsort
@@ -206,10 +136,9 @@ class SkeletonTracker:
             raise TrackerInitError(f"Failed to construct BoT-SORT: {exc}") from exc
 
         if self.occlusion_aware_tracking:
-            # OCCLUSION-AWARE TRACKING
             params = self.occlusion_params
             self._log(
-                "info",
+                "debug",
                 "Occlusion-aware tracking ENABLED: an OCCLUDED matched "
                 "detection skips the Kalman measurement update and freezes the "
                 "ReID feature (prediction and track lifetime continue). "
@@ -222,17 +151,23 @@ class SkeletonTracker:
                 f"min_normal_width_samples={params.min_normal_width_samples}).",
             )
 
+        features = [
+            f"ReID every {self.reid_interval} frames" if self.with_reid else "ReID off"
+        ]
+        if self.occlusion_aware_tracking:
+            features.append("occlusion-aware (experimental)")
+        self._log("info", f"BoT-SORT ready ({', '.join(features)})")
         self._log(
-            "info",
-            f"BoT-SORT ready (with_reid={self.with_reid}, "
+            "debug",
+            f"BoT-SORT with_reid={self.with_reid}, "
             f"reid_interval={self.reid_interval}, "
             f"cmc_method={self.cmc_method}, frame_rate={self.frame_rate}, "
             f"device={self.device}, track_buffer={self.track_buffer}, "
             f"max_time_lost={self.max_time_lost} frames "
-            f"~{self.max_time_lost / max(self.frame_rate, 1):.2f}s)",
+            f"~{self.max_time_lost / max(self.frame_rate, 1):.2f}s",
         )
         self._log(
-            "info",
+            "debug",
             "Association gates: "
             f"proximity_thresh={self.tracker.proximity_thresh:.2f} "
             f"(ReID eligible for IoU >= "
@@ -255,7 +190,6 @@ class SkeletonTracker:
         """
         return int(self.tracker.max_time_lost)
 
-    # ------------------------------------------------------------------
     def _log(self, level: str, message: str) -> None:
         if self._logger is None:
             print(f"[{level}] {message}", flush=True)
@@ -266,14 +200,11 @@ class SkeletonTracker:
             print(f"[{level}] {message}", flush=True)
 
     def _build_reid(self):
-        """Load the OSNet ReID model once, from the baked image path."""
+        """Load the OSNet ReID model."""
         if not osp.isfile(self.reid_checkpoint):
             raise TrackerInitError(
-                f"ReID checkpoint not found: {self.reid_checkpoint}\n"
-                "It is baked into the Docker image at "
-                "/opt/models/reid/osnet_x0_25_msmt17.pt by docker/fetch_models.py. "
-                "Rebuild the image or point 'reid_checkpoint' at a real file. "
-                "Refusing to fall back to a runtime download."
+                f"ReID checkpoint not found: {self.reid_checkpoint}. "
+                "Run docker/fetch_models.py or point 'reid_checkpoint' at a real file."
             )
 
         try:
@@ -296,15 +227,14 @@ class SkeletonTracker:
             ) from exc
         self.reid_load_seconds = time.time() - start
 
+        self._log("info", f"ReID loaded in {self.reid_load_seconds:.2f}s")
         self._log(
-            "info",
-            f"ReID loaded in {self.reid_load_seconds:.2f}s from "
-            f"{self.reid_checkpoint} (backend={type(reid.model).__name__}, "
+            "debug",
+            f"ReID {self.reid_checkpoint} (backend={type(reid.model).__name__}, "
             f"device={self.device}, half={self.half})",
         )
         return reid.model
 
-    # ------------------------------------------------------------------
     @staticmethod
     def to_boxmot_detections(detections: Sequence[PersonDetection]) -> np.ndarray:
         """Build the ``(N, 6)`` ``[x1, y1, x2, y2, conf, cls]`` array.
@@ -323,13 +253,7 @@ class SkeletonTracker:
         return np.concatenate([boxes, scores.reshape(-1, 1), classes], axis=1)
 
     def _frame_visibility(self, detections: Sequence[PersonDetection]):
-        """One :class:`DetectionVisibility` per detection, same order.
-
-        RTMO always emits a ``(17,)`` float32 ``keypoint_scores`` array, so the
-        unavailable branch is defensive. When it does fire it is logged (not
-        silently read as zero confidence) and the visible-ratio criterion is
-        skipped for that detection.
-        """
+        """One :class:`DetectionVisibility` per detection, same order."""
         visibility = [
             compute_detection_visibility(
                 detection.keypoint_scores,

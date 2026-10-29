@@ -1,9 +1,4 @@
-"""Default model asset paths.
-
-Every asset lives under one models directory: ``/opt/models`` in the Docker
-image (see docker/fetch_models.py), anything else natively via
-``SKELETON_MODELS_DIR``. The per-file variables still override one asset.
-"""
+"""Model asset paths: ``$SKELETON_MODELS_DIR`` (default /opt/models), per-file env overrides."""
 
 import os
 

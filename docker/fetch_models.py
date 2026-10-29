@@ -1,43 +1,8 @@
-"""Fetch runtime model assets into a models directory (default /opt/models).
+"""Download and sha256-verify the model weights into a models directory.
 
-Docker bakes them into the image; a native install passes ``--models-dir``
-(or sets ``SKELETON_MODELS_DIR``) and points the node at the same directory::
+    python3 docker/fetch_models.py --models-dir ~/models   # default /opt/models
 
-    python3 docker/fetch_models.py --models-dir ~/models
-
-Why this exists
----------------
-The model files used to live in ``data/checkpoints/`` inside the source tree,
-which is both ``.gitignore``d and ``.dockerignore``d.  Anyone who did
-``git clone`` + ``docker pull`` therefore got a repository and an image with no
-weights, and the node failed at start-up.  Baking the assets into the image at
-a stable path makes a pulled image self-contained.
-
-This script downloads the WEIGHTS only.  The RTMO config is version-controlled
-in the repository under ``models/rtmo/`` and copied into the image by the
-Dockerfile ``COPY`` immediately above the line that runs this script -- so the
-config the image runs is the config a reviewer can read in git.  This script
-then asserts that copy is present and loadable.
-
-Layout produced::
-
-    /opt/models/
-    ├── rtmo/
-    │   ├── rtmo-m.py           MMPose config      (COPY'd from models/rtmo/)
-    │   ├── default_runtime.py  its _base_         (COPY'd from models/rtmo/)
-    │   └── rtmo-m.pth          official RTMO-M Body7 checkpoint (downloaded)
-    └── reid/
-        └── osnet_x0_25_msmt17.pt   ReID weights   (downloaded)
-
-Sources are official only:
-  * RTMO checkpoint -> download.openmmlab.com (the URL published in the MMPose
-    RTMO project), verified against the sha256 that MMPose encodes in the
-    filename.
-  * ReID weights    -> BoxMOT's own registry URL, fetched with BoxMOT's own
-    downloader, then checksum-verified.  No third-party mirror is used.
-
-Every download is verified by sha256, so a corrupted or substituted file fails
-the image build instead of silently shipping.
+The RTMO config is tracked in models/rtmo/ and copied alongside.
 """
 
 import argparse
@@ -48,15 +13,11 @@ import sys
 import urllib.request
 from pathlib import Path
 
-# Set in main() from --models-dir.
 MODELS_ROOT = RTMO_DIR = REID_DIR = None
 
-# Present when run from a checkout; absent in Docker, where the script runs
-# from /tmp after the Dockerfile COPY'd the config into place.
+# Absent in Docker, where the Dockerfile COPYs the config instead.
 REPO_RTMO_DIR = Path(__file__).resolve().parents[1] / "models" / "rtmo"
 
-# Official MMPose RTMO-M (Body7, 640x640). The sha256 prefix is part of the
-# published filename, which is how MMPose distributes the digest.
 RTMO_CHECKPOINT_URL = (
     "https://download.openmmlab.com/mmpose/v1/projects/rtmo/"
     "rtmo-m_16xb16-600e_body7-640x640-39e78cc4_20231211.pth"
@@ -116,13 +77,7 @@ def fetch_rtmo_checkpoint() -> None:
 
 
 def check_rtmo_config() -> None:
-    """Assert the repo-vendored RTMO config was COPY'd in and actually loads.
-
-    The config is NOT generated here: the Dockerfile copies models/rtmo/ from
-    the repository.  This function is the build-time gate that catches a
-    missing COPY, a renamed file, or a broken _base_ chain -- and it catches it
-    during `docker build` rather than at node start-up on the robot.
-    """
+    """Fail early if the RTMO config is missing or its _base_ chain is broken."""
     from mmengine import Config
 
     config = RTMO_DIR / "rtmo-m.py"
@@ -139,7 +94,6 @@ def check_rtmo_config() -> None:
             )
 
     print(f"[rtmo] validating vendored config {config}")
-    # Loading resolves the _base_ chain, so a broken sibling path fails here.
     loaded = Config.fromfile(str(config))
     missing = [
         key
