@@ -40,7 +40,6 @@ so ``frame_rate=55`` with ``track_buffer=90`` gives ``max_time_lost=165``
 frames, i.e. about 3.0 s of wall clock at the processed rate.
 """
 
-import os
 import os.path as osp
 import time
 from typing import List, Optional, Sequence
@@ -49,6 +48,7 @@ import numpy as np
 
 from .occlusion_tracking import OcclusionParams, compute_detection_visibility
 from .rtmo_inference import PersonDetection
+from ..utils.model_paths import DEFAULT_REID_CHECKPOINT
 
 # BoxMOT's person class id. Every RTMO detection is a person.
 PERSON_CLASS_ID = 0
@@ -56,9 +56,6 @@ PERSON_CLASS_ID = 0
 # Columns of the (N, 6) detection array BoxMOT expects.
 DETECTION_COLUMNS = 6
 
-DEFAULT_REID_CHECKPOINT = os.environ.get(
-    "REID_CHECKPOINT", "/opt/models/reid/osnet_x0_25_msmt17.pt"
-)
 
 
 class TrackerInitError(RuntimeError):

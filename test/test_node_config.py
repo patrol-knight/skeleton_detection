@@ -171,7 +171,7 @@ def test_default_config_is_the_ros_camera_deployment(make_node):
 # ----------------------------------------------------------------------
 # 5 - launch default
 # ----------------------------------------------------------------------
-def test_launch_file_exposes_only_config_defaulting_to_skeleton_detection_node_yaml():
+def test_launch_file_exposes_config_and_models_dir():
     pytest.importorskip("launch")
     from ament_index_python.packages import (
         PackageNotFoundError,
@@ -190,6 +190,6 @@ def test_launch_file_exposes_only_config_defaulting_to_skeleton_detection_node_y
     description = module.generate_launch_description()
 
     arguments = [e for e in description.entities if isinstance(e, DeclareLaunchArgument)]
-    assert [argument.name for argument in arguments] == ["config"]
+    assert [argument.name for argument in arguments] == ["config", "models_dir"]
     default = "".join(part.text for part in arguments[0].default_value)
     assert default.endswith(os.path.join("config", "skeleton_detection_node.yaml"))

@@ -93,25 +93,21 @@ from .input.ros_camera_subscriber import (
 )
 from .inference.rtmo_inference import PersonDetection, RTMOInference, RTMOInferenceError
 from .inference.occlusion_tracking import OcclusionParams
-from .inference.person_tracking import (
-    DEFAULT_REID_CHECKPOINT,
-    SkeletonTracker,
-    TrackerInitError,
-)
+from .inference.person_tracking import SkeletonTracker, TrackerInitError
 from .output.visualization import (
     VisualizationWriter,
     draw_skeleton_overlay,
     joint_visibility_summary,
     legend_for,
 )
+from .utils.model_paths import (
+    DEFAULT_CHECKPOINT,
+    DEFAULT_MODEL_CONFIG,
+    DEFAULT_REID_CHECKPOINT,
+)
 
 DEFAULT_VISUALIZATION_DIR = "/ros2_ws/src/skeleton_detection/output/visualizations"
 
-# Model assets are baked into the Docker image at /opt/models (see
-# docker/fetch_models.py), so a pulled image is self-contained and does not
-# depend on the gitignored data/ directory.
-DEFAULT_MODEL_CONFIG = os.environ.get("RTMO_MODEL_CONFIG", "/opt/models/rtmo/rtmo-m.py")
-DEFAULT_CHECKPOINT = os.environ.get("RTMO_CHECKPOINT", "/opt/models/rtmo/rtmo-m.pth")
 
 INPUT_MODE_ROS_TOPIC = "ros_topic"
 INPUT_MODE_REALSENSE = "realsense"
