@@ -45,14 +45,14 @@ MODELS_ROOT = Path("/opt/models")
 RTMO_DIR = MODELS_ROOT / "rtmo"
 REID_DIR = MODELS_ROOT / "reid"
 
-# Official MMPose RTMO-M (Body7, 640x640). The sha256 prefix is part of the
+# Official MMPose RTMO-S (Body7, 640x640). The sha256 prefix is part of the
 # published filename, which is how MMPose distributes the digest.
 RTMO_CHECKPOINT_URL = (
     "https://download.openmmlab.com/mmpose/v1/projects/rtmo/"
-    "rtmo-m_16xb16-600e_body7-640x640-39e78cc4_20231211.pth"
+    "rtmo-s_8xb32-600e_body7-640x640-dac2bf74_20231211.pth"
 )
 RTMO_CHECKPOINT_SHA256 = (
-    "39e78cc4afed7d1dd31ea73ee04842f7d8f8e695d900d41b90746e94728a01c3"
+    "dac2bf749bbfb51e69ca577ca0327dff4433e3be9a56b782f0b7ef94fb45247e"
 )
 REID_MODEL_NAME = "osnet_x0_25_msmt17.pt"
 REID_SHA256 = "6f57607fed9f502b9efed546108132ee715df5a5b6e6932c6269bacb47f59f99"
@@ -79,7 +79,7 @@ def verify(path: Path, expected: str, label: str) -> None:
 
 
 def fetch_rtmo_checkpoint() -> None:
-    dest = RTMO_DIR / "rtmo-m.pth"
+    dest = RTMO_DIR / "rtmo-s.pth"
     print(f"[rtmo] downloading checkpoint -> {dest}")
     with urllib.request.urlopen(RTMO_CHECKPOINT_URL, timeout=120) as response:
         with dest.open("wb") as handle:
@@ -98,11 +98,11 @@ def check_rtmo_config() -> None:
     """
     from mmengine import Config
 
-    config = RTMO_DIR / "rtmo-m.py"
+    config = RTMO_DIR / "rtmo-s.py"
     base = RTMO_DIR / "default_runtime.py"
     for path, why in (
         (config, "COPY models/rtmo/ /opt/models/rtmo/ in the Dockerfile"),
-        (base, "rtmo-m.py declares it as its _base_"),
+        (base, "rtmo-s.py declares it as its _base_"),
     ):
         if not path.is_file():
             raise SystemExit(

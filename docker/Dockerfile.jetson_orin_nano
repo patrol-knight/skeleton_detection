@@ -167,8 +167,8 @@ COPY models/rtmo/ /opt/models/rtmo/
 COPY docker/fetch_models.py /tmp/fetch_models.py
 RUN python3 /tmp/fetch_models.py && rm -f /tmp/fetch_models.py
 
-ENV RTMO_MODEL_CONFIG=/opt/models/rtmo/rtmo-m.py \
-    RTMO_CHECKPOINT=/opt/models/rtmo/rtmo-m.pth \
+ENV RTMO_MODEL_CONFIG=/opt/models/rtmo/rtmo-s.py \
+    RTMO_CHECKPOINT=/opt/models/rtmo/rtmo-s.pth \
     REID_CHECKPOINT=/opt/models/reid/osnet_x0_25_msmt17.pt
 
 # Catch dependency/import regressions and missing assets during docker build.
