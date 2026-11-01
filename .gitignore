@@ -33,3 +33,5 @@ __pycache__/
 *.engine
 *.trt
 *.safetensors
+
+/benchmark_results/
