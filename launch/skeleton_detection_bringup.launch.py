@@ -19,14 +19,20 @@ process) or a config mounted into the container:
 
     ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \\
         config:=/config/skeleton_detection_node.yaml
+
+Outside Docker, point ``models_dir`` at the directory docker/fetch_models.py
+filled (default: ``$SKELETON_MODELS_DIR``, else ``/opt/models``):
+
+    ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \\
+        models_dir:=$HOME/models
 """
 
 import os
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.actions import DeclareLaunchArgument, SetEnvironmentVariable
+from launch.substitutions import EnvironmentVariable, LaunchConfiguration
 from launch_ros.actions import Node
 
 
@@ -42,6 +48,12 @@ def generate_launch_description() -> LaunchDescription:
                 description="Parameter file for rtmo_node; the single source "
                 "of truth for every node parameter, including input_mode.",
             ),
+            DeclareLaunchArgument(
+                "models_dir",
+                default_value=EnvironmentVariable("SKELETON_MODELS_DIR", default_value="/opt/models"),
+                description="Directory holding rtmo/ and reid/ model assets.",
+            ),
+            SetEnvironmentVariable("SKELETON_MODELS_DIR", LaunchConfiguration("models_dir")),
             Node(
                 package="skeleton_detection",
                 executable="iot_node",

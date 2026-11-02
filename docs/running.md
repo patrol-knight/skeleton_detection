@@ -125,20 +125,14 @@ this mode uses it instead of three separate subscriptions:
 | `depth` | the `(H, W)` aligned depth array, `16UC1` in millimeters |
 | `rgb_camera_info` | `k` → `CameraIntrinsics(fx, fy, cx, cy, width, height)` |
 
-Startup logs the mode and the topic, and nothing per frame:
+Startup logs the topic, then one line when the first message arrives:
 
 ```text
-[rtmo_node]: Input mode: ros_camera
-[rtmo_node]: RGBD topic: /camera/camera/rgbd
+[rtmo_node]: Input: /camera/camera/rgbd (ros_camera)
+[rtmo_node]: First RGBD frame: 848x480, depth 16UC1 aligned
 ```
 
-Then, once the first message arrives, the resolved intrinsics and depth scale:
-
-```text
-[rtmo_node]: Colour intrinsics from CameraInfo.k (848x480): fx=... fy=... cx=... cy=...
-[rtmo_node]: Depth ENABLED: '16UC1' already aligned to colour by the external
-             driver, depth_scale=0.001000 m/unit (no rs.align in this process)
-```
+The intrinsics and depth scale are logged at debug level.
 
 `realsense_width`, `realsense_height`, `realsense_fps` and
 `realsense_enable_depth` have **no effect** in this mode — the external driver
@@ -196,13 +190,19 @@ run_duration_sec: 30.0
 > literal is rejected as the wrong parameter type. The same applies to every
 > other float parameter, e.g. `visualization_fps: 30.0`.
 
-A healthy start-up logs the resolved model paths:
+A healthy start-up looks like:
 
 ```text
-[rtmo_node]: RTMO model loaded (config=/opt/models/rtmo/rtmo-m.py, checkpoint=/opt/models/rtmo/rtmo-m.pth)
+[rtmo_node]: RTMO-M loaded in 1.32s on Orin
+[rtmo_node]: ReID loaded in 0.23s
+[rtmo_node]: BoT-SORT ready (ReID every 2 frames, occlusion-aware (experimental))
+[rtmo_node]: Input: /camera/camera/rgbd (ros_camera)
+[rtmo_node]: Output: /skeleton_detection/frame, visualization /skeleton_detection/visualization_image @ 10.0 Hz
 ```
 
-then periodic pipeline statistics, then a summary as it exits.
+then periodic pipeline statistics, then a summary as it exits. Model paths,
+intrinsics, tracker gates and the rest are logged at debug level:
+`--ros-args --log-level rtmo_node:=debug`.
 
 With **no camera attached** the model-loading half can still be checked on its
 own — this loads the config and checkpoint and then fails at camera open, which

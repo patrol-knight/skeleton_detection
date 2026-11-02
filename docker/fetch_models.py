@@ -1,49 +1,22 @@
-"""Bake runtime model assets into the Docker image under /opt/models.
+"""Download and sha256-verify the model weights into a models directory.
 
-Why this exists
----------------
-The model files used to live in ``data/checkpoints/`` inside the source tree,
-which is both ``.gitignore``d and ``.dockerignore``d.  Anyone who did
-``git clone`` + ``docker pull`` therefore got a repository and an image with no
-weights, and the node failed at start-up.  Baking the assets into the image at
-a stable path makes a pulled image self-contained.
+    python3 docker/fetch_models.py --models-dir ~/models   # default /opt/models
 
-This script downloads the WEIGHTS only.  The RTMO config is version-controlled
-in the repository under ``models/rtmo/`` and copied into the image by the
-Dockerfile ``COPY`` immediately above the line that runs this script -- so the
-config the image runs is the config a reviewer can read in git.  This script
-then asserts that copy is present and loadable.
-
-Layout produced::
-
-    /opt/models/
-    ├── rtmo/
-    │   ├── rtmo-m.py           MMPose config      (COPY'd from models/rtmo/)
-    │   ├── default_runtime.py  its _base_         (COPY'd from models/rtmo/)
-    │   └── rtmo-m.pth          official RTMO-M Body7 checkpoint (downloaded)
-    └── reid/
-        └── osnet_x0_25_msmt17.pt   ReID weights   (downloaded)
-
-Sources are official only:
-  * RTMO checkpoint -> download.openmmlab.com (the URL published in the MMPose
-    RTMO project), verified against the sha256 that MMPose encodes in the
-    filename.
-  * ReID weights    -> BoxMOT's own registry URL, fetched with BoxMOT's own
-    downloader, then checksum-verified.  No third-party mirror is used.
-
-Every download is verified by sha256, so a corrupted or substituted file fails
-the image build instead of silently shipping.
+The RTMO config is tracked in models/rtmo/ and copied alongside.
 """
 
+import argparse
 import hashlib
+import os
 import shutil
 import sys
 import urllib.request
 from pathlib import Path
 
-MODELS_ROOT = Path("/opt/models")
-RTMO_DIR = MODELS_ROOT / "rtmo"
-REID_DIR = MODELS_ROOT / "reid"
+MODELS_ROOT = RTMO_DIR = REID_DIR = None
+
+# Absent in Docker, where the Dockerfile COPYs the config instead.
+REPO_RTMO_DIR = Path(__file__).resolve().parents[1] / "models" / "rtmo"
 
 # Official MMPose RTMO-S (Body7, 640x640). The sha256 prefix is part of the
 # published filename, which is how MMPose distributes the digest.
@@ -73,13 +46,31 @@ def verify(path: Path, expected: str, label: str) -> None:
         raise SystemExit(
             f"FATAL: {label} sha256 mismatch\n"
             f"  expected {expected}\n  got      {actual}\n"
-            "Refusing to bake an unverified model file into the image."
+            "Refusing to keep an unverified model file."
         )
     print(f"  sha256 OK ({actual[:16]}...)")
 
 
+def is_verified(path: Path, expected: str) -> bool:
+    if path.is_file() and sha256_of(path) == expected:
+        print(f"  {path} already present, sha256 OK; skipping download")
+        return True
+    return False
+
+
+def copy_rtmo_config() -> None:
+    if not REPO_RTMO_DIR.is_dir() or REPO_RTMO_DIR == RTMO_DIR.resolve():
+        return
+    print(f"[rtmo] copying config {REPO_RTMO_DIR} -> {RTMO_DIR}")
+    for path in REPO_RTMO_DIR.glob("*.py"):
+        shutil.copy2(path, RTMO_DIR / path.name)
+
+
 def fetch_rtmo_checkpoint() -> None:
     dest = RTMO_DIR / "rtmo-s.pth"
+    # dest = RTMO_DIR / "rtmo-m.pth"
+    if is_verified(dest, RTMO_CHECKPOINT_SHA256):
+        return
     print(f"[rtmo] downloading checkpoint -> {dest}")
     with urllib.request.urlopen(RTMO_CHECKPOINT_URL, timeout=120) as response:
         with dest.open("wb") as handle:
@@ -89,13 +80,7 @@ def fetch_rtmo_checkpoint() -> None:
 
 
 def check_rtmo_config() -> None:
-    """Assert the repo-vendored RTMO config was COPY'd in and actually loads.
-
-    The config is NOT generated here: the Dockerfile copies models/rtmo/ from
-    the repository.  This function is the build-time gate that catches a
-    missing COPY, a renamed file, or a broken _base_ chain -- and it catches it
-    during `docker build` rather than at node start-up on the robot.
-    """
+    """Fail early if the RTMO config is missing or its _base_ chain is broken."""
     from mmengine import Config
 
     config = RTMO_DIR / "rtmo-s.py"
@@ -112,7 +97,6 @@ def check_rtmo_config() -> None:
             )
 
     print(f"[rtmo] validating vendored config {config}")
-    # Loading resolves the _base_ chain, so a broken sibling path fails here.
     loaded = Config.fromfile(str(config))
     missing = [
         key
@@ -134,6 +118,8 @@ def fetch_reid_checkpoint() -> None:
     from boxmot.utils.download import download_file
 
     dest = REID_DIR / REID_MODEL_NAME
+    if is_verified(dest, REID_SHA256):
+        return
     url = TRAINED_URLS[REID_MODEL_NAME]
     print(f"[reid] downloading {REID_MODEL_NAME} -> {dest}")
     print(f"  official BoxMOT source: {url}")
@@ -143,16 +129,28 @@ def fetch_reid_checkpoint() -> None:
 
 
 def main() -> None:
-    # RTMO_DIR normally already exists (the Dockerfile COPY creates it);
-    # mkdir keeps the script runnable standalone for debugging.
+    global MODELS_ROOT, RTMO_DIR, REID_DIR
+
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--models-dir",
+        type=Path,
+        default=Path(os.environ.get("SKELETON_MODELS_DIR", "/opt/models")),
+        help="destination directory (default: $SKELETON_MODELS_DIR, else /opt/models)",
+    )
+    MODELS_ROOT = parser.parse_args().models_dir.expanduser().resolve()
+    RTMO_DIR = MODELS_ROOT / "rtmo"
+    REID_DIR = MODELS_ROOT / "reid"
+
     RTMO_DIR.mkdir(parents=True, exist_ok=True)
     REID_DIR.mkdir(parents=True, exist_ok=True)
 
+    copy_rtmo_config()
     check_rtmo_config()
     fetch_rtmo_checkpoint()
     fetch_reid_checkpoint()
 
-    print("\nBaked model assets:")
+    print(f"\nModel assets in {MODELS_ROOT}:")
     for path in sorted(MODELS_ROOT.rglob("*")):
         if path.is_file():
             print(f"  {path}  ({path.stat().st_size / 1e6:.2f} MB)")

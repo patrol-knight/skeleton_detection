@@ -1,19 +1,10 @@
-"""RTMO-M model ownership and inference.
+"""RTMO-M model loading, inference and result parsing (no ROS code).
 
-Owns the model, the checkpoint-loading workaround and the result parsing.
-Knows nothing about ROS: it takes a BGR frame and returns a list of
-:class:`PersonDetection`.
-
-Coordinate convention
----------------------
-Everything here stays in **xyxy**, in the ORIGINAL source image coordinate
-system.  MMPose's bottom-up estimator already maps its predictions out of the
-padded 640x640 model input back into image space, and BoT-SORT also wants
-xyxy, so no conversion happens until
-:mod:`skeleton_detection.output.message_builder` turns the detection into a ROS
-message (where the published convention is ``[x, y, width, height]``).
+Boxes stay xyxy in original image pixels until the ROS message is built.
 """
 
+import contextlib
+import io
 import os.path as osp
 import time
 from dataclasses import dataclass, field
@@ -24,8 +15,6 @@ import numpy as np
 from ..utils.coco_keypoints import COCO_KEYPOINT_NAMES, NUM_COCO_KEYPOINTS
 from .depth_estimation import NO_POSITION, CameraPoint
 
-# Published ``person_id`` for a detection with no persistent tracker identity
-# (tracking disabled, or the tracker emitted no track for it this frame).
 UNTRACKED_PERSON_ID = -1
 
 
@@ -39,25 +28,11 @@ class PersonDetection:
         score: person/instance confidence in [0, 1].
         keypoints_xy: ``(17, 2)`` float32 COCO keypoints in image pixels.
         keypoint_scores: ``(17,)`` float32 per-joint confidence.
-        track_id: persistent BoT-SORT id once
-            :class:`~skeleton_detection.inference.person_tracking.SkeletonTracker` has
-            run.
-            ``None`` means "not tracked" -- either tracking is disabled, or the
-            tracker did not return a track for this detection this frame.
-        detection_index: position of this detection in the frame's list. This
-            is what BoxMOT echoes back as ``det_ind``, and it is how a track is
-            joined to the exact skeleton that produced it. Internal only: it is
-            NEVER published as an identity.
-        position: the person's 3D point ``(x, y, z)`` in meters in the COLOUR
-            camera OPTICAL frame (x right, y down, z forward), filled in after
-            inference by
-            :func:`skeleton_detection.inference.depth_estimation.compute_person_position`.
-            All-NaN
-            (:data:`~skeleton_detection.inference.depth_estimation.NO_POSITION`)
-            means "not available" and is the default.
-
-    ``depth`` is derived from ``position``, not stored separately: see
-    :attr:`depth`.
+        track_id: persistent BoT-SORT id, ``None`` when untracked.
+        detection_index: index in the frame's list; BoxMOT's ``det_ind``.
+            Never published.
+        position: ``(x, y, z)`` [m] in the colour optical frame; all-NaN when
+            unavailable.
     """
 
     bbox_xyxy: np.ndarray
@@ -70,33 +45,20 @@ class PersonDetection:
 
     @property
     def person_id(self) -> int:
-        """Id to publish: the persistent tracker id, or ``-1`` when there is none.
-
-        ``>= 0`` always means a BoT-SORT track id; ``-1``
-        (:data:`UNTRACKED_PERSON_ID`) means no persistent identity is available
-        for this detection right now. The frame-local ``detection_index`` is
-        never used as a fallback.
-        """
+        """The persistent track id, or ``-1`` when there is none."""
         return self.track_id if self.track_id is not None else UNTRACKED_PERSON_ID
 
     @property
     def depth(self) -> float:
-        """EUCLIDEAN camera-to-person distance [m], ``sqrt(x^2 + y^2 + z^2)``.
-
-        Not the RealSense Z-depth (that is ``position.z``). NaN when
-        ``position`` is unavailable.
-        """
+        """Euclidean distance [m], not Z-depth (that is ``position.z``)."""
         return self.position.distance
 
 
 def install_checkpoint_loader_workaround() -> None:
-    """Allow mmengine to load the RTMO checkpoint under torch >= 2.6.
+    """Load the RTMO checkpoint under torch >= 2.6 (``weights_only=False``).
 
-    torch 2.6 flipped the ``torch.load`` ``weights_only`` default to ``True``.
-    mmengine 0.10.7's local checkpoint loader never passes the argument and the
-    RTMO checkpoint stores numpy objects the restricted unpickler cannot
-    rebuild.  Override the registered scheme through mmengine's public API
-    instead of patching site-packages (see docker/PACKAGES.md, finding 4).
+    mmengine 0.10.7 doesn't pass ``weights_only`` and the checkpoint holds
+    numpy objects the restricted unpickler can't rebuild.
     """
     import torch
     from mmengine.runner import CheckpointLoader
@@ -127,6 +89,7 @@ class RTMOInference:
         self.model_config = model_config
         self.checkpoint = checkpoint
         self.device = device
+        self.device_name = device
         self.person_score_threshold = float(person_score_threshold)
         self._logger = logger
         self.load_seconds = 0.0
@@ -135,7 +98,6 @@ class RTMOInference:
         self._check_device()
         self._build()
 
-    # ------------------------------------------------------------------
     def _log(self, level: str, message: str) -> None:
         if self._logger is None:
             print(f"[{level}] {message}", flush=True)
@@ -161,33 +123,28 @@ class RTMOInference:
                     f"'{self.device}' was requested. Start the container with "
                     "GPU access or set the 'device' parameter to 'cpu' explicitly."
                 )
-            index = torch.cuda.current_device()
-            self._log(
-                "info",
-                f"CUDA available: using {torch.cuda.get_device_name(index)} "
-                f"(device='{self.device}', torch {torch.__version__})",
-            )
+            self.device_name = torch.cuda.get_device_name(torch.cuda.current_device())
+            self._log("debug", f"torch {torch.__version__}, device={self.device}")
         else:
             self._log("warning", f"Running RTMO on '{self.device}' (no CUDA)")
 
     def _build(self) -> None:
         install_checkpoint_loader_workaround()
 
-        # Imported here (not at module import time) so the checkpoint-loader
-        # override is registered first and import failures are reported with
-        # full node context.
         from mmpose.apis import inference_bottomup, init_model
 
         self._inference_bottomup = inference_bottomup
 
         start = time.time()
-        self.model = init_model(self.model_config, self.checkpoint, device=self.device)
+        # mmengine print()s "Loads checkpoint by ..." with no logger to silence.
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.model = init_model(self.model_config, self.checkpoint, device=self.device)
         self.load_seconds = time.time() - start
         self._log(
             "info",
-            f"Loaded RTMO-M in {self.load_seconds:.2f}s "
-            f"(config={self.model_config}, checkpoint={self.checkpoint})",
+            f"RTMO-M loaded in {self.load_seconds:.2f}s on {self.device_name}",
         )
+        self._log("debug", f"config={self.model_config}, checkpoint={self.checkpoint}")
         self._verify_keypoint_layout()
 
     def _verify_keypoint_layout(self) -> None:
@@ -209,31 +166,16 @@ class RTMOInference:
                 f"{COCO_KEYPOINT_NAMES}"
             )
         self._log(
-            "info", f"Keypoint layout verified: COCO-17 ({NUM_COCO_KEYPOINTS} joints)"
+            "debug", f"Keypoint layout verified: COCO-17 ({NUM_COCO_KEYPOINTS} joints)"
         )
 
-    # ------------------------------------------------------------------
     def infer(self, frame_bgr: np.ndarray) -> List[PersonDetection]:
-        """Run RTMO on one BGR frame and return parsed detections.
-
-        The official MMPose bottom-up API owns resize/pad/normalisation; the
-        BGR array is handed over untouched (the RTMO config uses
-        ``mean=[0,0,0]``, ``std=[1,1,1]`` and no ``bgr_to_rgb``).
-
-        A ``NotImplementedError`` from the stubbed ``mmcv._ext`` propagates
-        deliberately: this environment ships mmcv-lite, and a real native-op
-        call must fail loudly rather than yield a fabricated result.
-        """
+        """Run RTMO on one BGR frame and return parsed detections."""
         results = self._inference_bottomup(self.model, frame_bgr)
         return self._parse(results)
 
     def _parse(self, results) -> List[PersonDetection]:
-        """Convert RTMO ``PoseDataSample`` predictions to PersonDetection.
-
-        ``pred_instances`` (already in original-image coordinates) provides
-        ``bboxes`` (N,4 xyxy), ``scores`` (N,), ``keypoints`` (N,17,2) and
-        ``keypoint_scores`` (N,17).
-        """
+        """Convert RTMO ``PoseDataSample`` predictions to PersonDetection."""
         detections: List[PersonDetection] = []
         if not results:
             return detections
@@ -264,8 +206,7 @@ class RTMOInference:
                     score=score,
                     keypoints_xy=person_keypoints,
                     keypoint_scores=keypoint_scores[index],
-                    # Assigned after filtering so the index always matches this
-                    # list's position -- which is what BoxMOT's det_ind refers to.
+                    # after filtering, so it matches BoxMOT's det_ind
                     detection_index=len(detections),
                 )
             )

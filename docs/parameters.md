@@ -104,8 +104,8 @@ device's supported list rather than being silently substituted.
 
 | Parameter | Type | Node default | Description |
 |---|---|---|---|
-| `model_config` | string | `$RTMO_MODEL_CONFIG`, else `/opt/models/rtmo/rtmo-m.py` | MMPose RTMO-M config |
-| `checkpoint` | string | `$RTMO_CHECKPOINT`, else `/opt/models/rtmo/rtmo-m.pth` | RTMO-M weights |
+| `model_config` | string | `$RTMO_MODEL_CONFIG`, else `<models>/rtmo/rtmo-m.py` | MMPose RTMO-M config |
+| `checkpoint` | string | `$RTMO_CHECKPOINT`, else `<models>/rtmo/rtmo-m.pth` | RTMO-M weights |
 | `device` | string | `cuda:0` | Torch device for RTMO |
 | `person_score_threshold` | double | `0.3` | detections below this person score are not published at all |
 
@@ -133,7 +133,7 @@ in `RealSenseCapture.start()`.
 |---|---|---|---|
 | `enable_tracking` | bool | `false` | enable in-process BoT-SORT; makes `person_id` a persistent track ID |
 | `with_reid` | bool | `true` | use OSNet appearance features inside BoT-SORT |
-| `reid_checkpoint` | string | `$REID_CHECKPOINT`, else `/opt/models/reid/osnet_x0_25_msmt17.pt` | ReID weights |
+| `reid_checkpoint` | string | `$REID_CHECKPOINT`, else `<models>/reid/osnet_x0_25_msmt17.pt` | ReID weights |
 | `tracking_frame_rate` | double | `0.0` | `<= 0` uses the built-in `DEFAULT_TRACKING_FRAME_RATE` of **55** (the measured pipeline rate, not the 60 Hz camera rate). Scales BoT-SORT's lost-track buffer |
 | `cmc_method` | string | `none` | camera-motion compensation: `none`, `ecc`, `orb`, `sift`, `sof`. `none`/`""` is mapped to Python `None`, which is what BoxMOT wants |
 | `track_high_thresh` | double | `0.5` | BoxMOT default, unchanged |
@@ -236,7 +236,8 @@ Supported suffixes: `.jpg`, `.jpeg`, `.png`, `.bmp`.
 
 | Launch file | Argument | Default | Description |
 |---|---|---|---|
-| `skeleton_detection_bringup.launch.py` | `config` | `<share>/config/skeleton_detection_node.yaml` | parameter file for `rtmo_node`; the only launch argument, and the single source of every node parameter |
+| `skeleton_detection_bringup.launch.py` | `config` | `<share>/config/skeleton_detection_node.yaml` | parameter file for `rtmo_node`; the single source of every node parameter |
+| `skeleton_detection_bringup.launch.py` | `models_dir` | `$SKELETON_MODELS_DIR`, else `/opt/models` | directory holding `rtmo/` and `reid/` model assets |
 
 `<share>` is `get_package_share_directory("skeleton_detection")`.
 
@@ -280,10 +281,12 @@ Neither YAML file sets `track_high_thresh`, `new_track_thresh`,
 
 ## Environment variables
 
-Exported by the Docker image and used as the node's parameter defaults:
+Used as the node's parameter defaults. `<models>` is `$SKELETON_MODELS_DIR`,
+else `/opt/models`; the per-file variables override one asset each.
 
 | Variable | Image value |
 |---|---|
+| `SKELETON_MODELS_DIR` | unset (`/opt/models`) |
 | `RTMO_MODEL_CONFIG` | `/opt/models/rtmo/rtmo-m.py` |
 | `RTMO_CHECKPOINT` | `/opt/models/rtmo/rtmo-m.pth` |
 | `REID_CHECKPOINT` | `/opt/models/reid/osnet_x0_25_msmt17.pt` |

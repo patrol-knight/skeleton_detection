@@ -1,11 +1,12 @@
 # Launch arguments
 
 `skeleton_detection_bringup.launch.py`, the only launch file in the package,
-has exactly **one** argument:
+has two arguments:
 
 | Argument | Default | Description |
 |---|---|---|
 | `config` | `<share>/config/skeleton_detection_node.yaml` | Parameter file for `rtmo_node`. Any path works, e.g. a file bind-mounted into the container. |
+| `models_dir` | `$SKELETON_MODELS_DIR`, else `/opt/models` | Directory holding `rtmo/` and `reid/`. Outside Docker, fill it with `python3 docker/fetch_models.py --models-dir <dir>`. |
 
 `<share>` is `get_package_share_directory("skeleton_detection")`, i.e.
 `/opt/skeleton_detection/share/skeleton_detection` in the image.
