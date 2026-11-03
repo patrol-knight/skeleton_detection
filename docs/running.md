@@ -3,7 +3,8 @@
 Every command on this page is run **inside the container**. `docker compose
 up -d` already starts the pipeline with the mounted deployment config, so for
 the manual launches below use a separate, throwaway container instead (it
-still needs the GPU and the `iot_ros-net` network from `compose.yaml`):
+still needs the GPU and the host network / IPC / DDS profile from
+`compose.yaml`):
 
 ```bash
 docker compose run --rm skeleton_humble bash
@@ -58,7 +59,7 @@ The recipes below list the YAML values to set; each is then started with that
 command. See [Launch arguments](launch_arguments.md).
 
 `input_mode` selects where frames come from. All three converge on the same
-RTMO → tracking → depth → `SkeletonFrame` path, so nothing downstream changes
+RTMO → tracking → depth → `SkeletonFrame3D` / `SkeletonFrame` path, so nothing downstream changes
 with the mode.
 
 | `input_mode` | Frames from | Depth / XYZ |
@@ -288,7 +289,7 @@ publish_visualization_image: true
 visualization_fps: 30.0
 ```
 
-The visualization rate is independent of the `SkeletonFrame` publish rate,
+The visualization rate is independent of the `SkeletonFrame3D` publish rate,
 which always runs at the full pipeline rate. 10 / 30 / 50 Hz have all been run
 successfully at 424 × 240.
 
@@ -313,14 +314,14 @@ draw_person_xyz: true
 ### Viewing it with rqt
 
 The image is headless and ships no rqt, so run the viewer in the IoT stack's
-`diagnose` container (see [GUI tools](docker.md#gui-tools-rqt--opt-in)):
+`tools` container (see [GUI tools](docker.md#gui-tools-rqt--opt-in)):
 
 ```bash
 # from the iot repo root
-./launch.sh up diagnose:=true
+./launch.sh up --tools        # starts the IoT nodes + the tools container
 xhost +local:docker      # on the HOST
 docker compose -f docker/docker-compose.yml --project-directory . \
-  exec -it diagnose bash -c \
+  exec -it tools bash -c \
   "ros2 run rqt_image_view rqt_image_view /skeleton_detection/visualization_image"
 ```
 
@@ -402,8 +403,10 @@ There is **no depth stream and no intrinsics** on this path, so `position` and
 ros2 node list                 # the pipeline appears as /rtmo_node
 ros2 node info /rtmo_node
 
-ros2 topic list                # /skeleton_detection/frame (+ visualization_image when enabled)
+ros2 topic list                # /skeleton_detection/frame, /skeleton_detection/debug_frame
+                               # (+ visualization_image when enabled)
 ros2 topic hz   /skeleton_detection/frame
+ros2 topic info /skeleton_detection/frame --verbose   # expect one publisher, SkeletonFrame3D
 ros2 topic hz   /skeleton_detection/visualization_image
 ros2 topic echo /skeleton_detection/frame --once
 ros2 topic info /skeleton_detection/visualization_image --verbose
@@ -422,7 +425,17 @@ The visualization topic only appears when
 
 ### Published messages
 
-`/skeleton_detection/frame` carries
+| Topic | Type | Role |
+|---|---|---|
+| `/skeleton_detection/frame` | `patrolknight_msgs/msg/SkeletonFrame3D` | official output: per-joint camera-frame XYZ + confidence, tracked persons only |
+| `/skeleton_detection/debug_frame` | `patrolknight_msgs/msg/SkeletonFrame` | legacy debug output (below), when `publish_debug_frame: true` |
+| `/skeleton_detection/visualization_image` | `sensor_msgs/msg/Image` | 2D overlay, when enabled |
+
+The official layout (`joints_xyzc`, NaN rules, depth gate) is specified in
+[Skeleton Detection V2.1](Skeleton_Detection_V2.1.md). The legacy debug
+message is unchanged from V2.0:
+
+`/skeleton_detection/debug_frame` carries
 `patrolknight_msgs/msg/SkeletonFrame`:
 
 ```text

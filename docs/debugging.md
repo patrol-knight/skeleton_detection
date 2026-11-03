@@ -128,7 +128,7 @@ IoT `realsense` container — makes it unavailable here.
 `rqt_image_view` shows nothing, or fails with a display error.
 
 1. The image is headless and has no rqt installed. Run rqt in the IoT
-   `diagnose` container — see [GUI tools](docker.md#gui-tools-rqt--opt-in).
+   `tools` container — see [GUI tools](docker.md#gui-tools-rqt--opt-in).
 2. Allow the container to talk to the host X server:
    ```bash
    xhost +local:docker      # run on the HOST
@@ -150,21 +150,24 @@ IoT `realsense` container — makes it unavailable here.
 
 ### Other tools do not see the topics
 
-The container joins the IoT bridge network `iot_ros-net` (not host
-networking). Tools in other containers on `iot_ros-net` (e.g. `diagnose`) see the
-topics; ROS tools running directly on the host may not.
-
-Check from inside the container first — if the topic is not there, it is not a
-DDS problem:
+The container uses host networking and host IPC (see
+[Networking](docker.md#networking)). Check from inside the container first --
+if the topic is not there, it is not a DDS problem:
 
 ```bash
 ros2 node list      # expect /rtmo_node
-ros2 topic list     # expect /skeleton_detection/frame
+ros2 topic list     # expect /skeleton_detection/frame and /skeleton_detection/debug_frame
 ```
 
-Then from another container on `iot_ros-net` (e.g. `diagnose`). If it works
-inside but not outside, confirm both sides are on that network and use the same
-`ROS_DOMAIN_ID` and the same RMW implementation.
+If it works inside but not outside, compare `ROS_DOMAIN_ID` (on this machine
+`~/.bashrc` exports one) and the RMW implementation on both sides.
+
+### RGBD topic is listed but no frame ever arrives
+
+Discovery works but the multi-MB RGBD messages are lost: the container is not
+using the 64 MB shared-memory profile. Check that
+`FASTRTPS_DEFAULT_PROFILES_FILE` points at a readable `fastdds.xml` (a parse
+error is printed as `XMLPARSER Error` at start-up) and that `ipc: host` is set.
 
 ### The topic exists but nothing arrives
 
@@ -184,8 +187,8 @@ The node logs `Input: ... (ros_camera)` and then stays quiet — no
 2. **Is the driver publishing?** `ros2 topic hz /camera/camera/rgbd`. Nothing
    here means the problem is on the driver side.
 3. **Can this container see it?** The driver runs in another container, so it
-   needs the same `ROS_DOMAIN_ID`, the same RMW implementation and DDS
-   reachability: both containers must be on `iot_ros-net`.
+   needs the same `ROS_DOMAIN_ID`, the same RMW implementation, host
+   networking/IPC and the shared-memory DDS profile (previous section).
 4. **QoS.** This node subscribes `best_effort` precisely because the driver
    publishes sensor-data QoS; `ros2 topic info /camera/camera/rgbd --verbose`
    shows the publisher's profile.

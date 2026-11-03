@@ -98,7 +98,11 @@ device's supported list rather than being silently substituted.
 
 | Parameter | Type | Node default | Description |
 |---|---|---|---|
-| `output_topic` | string | `/skeleton_detection/frame` | `SkeletonFrame` topic |
+| `output_topic` | string | `/skeleton_detection/frame` | official V2.1 output, `SkeletonFrame3D` |
+| `publish_debug_frame` | bool | `true` | also publish the legacy `SkeletonFrame` |
+| `debug_output_topic` | string | `/skeleton_detection/debug_frame` | legacy `SkeletonFrame` (UV joints, bbox, person position/depth) |
+
+See [Skeleton Detection V2.1](Skeleton_Detection_V2.1.md) for both message layouts.
 
 ### RTMO model
 
@@ -117,7 +121,7 @@ parameters or through the environment variables.
 
 | Parameter | Type | Node default | Description |
 |---|---|---|---|
-| `depth_keypoint_score_threshold` | double | `0.3` | a keypoint votes on the person's depth only at or above this RTMO **per-joint** confidence |
+| `depth_keypoint_score_threshold` | double | `0.3` (`0.30` in `skeleton_detection_node.yaml`) | per-joint depth gate: below it the joint is **not** depth-sampled and its official XYZ is `NaN`; at or above it the 3x3 patch is sampled. The legacy person depth uses the same sampled joints |
 | `depth_min_m` | double | `0.0` | optional lower metric sanity bound; `<= 0` disables it |
 | `depth_max_m` | double | `0.0` | optional upper metric sanity bound; `<= 0` disables it |
 

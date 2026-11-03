@@ -279,7 +279,7 @@ def compute_person_z(
         # hallucinated joint must not vote on where the person is.
         if not np.isfinite(scores[index]):
             continue
-        if scores[index] < float(params.keypoint_score_threshold):
+        if np.float32(scores[index]) < np.float32(params.keypoint_score_threshold):
             continue
 
         joint_z = compute_joint_z(image, points[index, 0], points[index, 1], params)
@@ -341,6 +341,117 @@ def deproject_pixel_to_point(
     return CameraPoint(x=x, y=y, z=z)
 
 
+def _check_aligned(image: np.ndarray, intrinsics: CameraIntrinsics) -> None:
+    if image.ndim == 2 and image.shape != (intrinsics.height, intrinsics.width):
+        raise ValueError(
+            f"depth image is {image.shape[1]}x{image.shape[0]} but the colour "
+            f"intrinsics are for {intrinsics.width}x{intrinsics.height}; the "
+            "depth image must be aligned to the colour stream"
+        )
+
+
+def compute_joint_depths(
+    depth_image: Optional[np.ndarray],
+    keypoints_xy: Optional[Sequence],
+    keypoint_scores: Optional[Sequence],
+    intrinsics: Optional[CameraIntrinsics],
+    params: DepthParams = DEFAULT_DEPTH_PARAMS,
+    num_joints: int = 17,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Per-joint Z and camera-frame XYZ + confidence for one person.
+
+    Each joint is gated on its own RTMO score: below
+    ``params.keypoint_score_threshold`` (or non-finite) the depth image is
+    not touched at all; at or above it, the ``window x window`` patch around
+    the joint is sampled (:func:`compute_joint_z`) and the joint's OWN pixel
+    ``(u, v)`` is deprojected at that median Z.
+
+    Returns:
+        ``joint_z``: ``(num_joints,)`` float64 optical-axis Z [m], NaN where
+            no depth was sampled or none was usable. The legacy person Z is
+            the median of its finite values (:func:`person_z_from_joint_z`),
+            so the patches are sampled once for both outputs.
+        ``joints_xyzc``: ``(num_joints * 4,)`` float32
+            ``[X0, Y0, Z0, c0, X1, ...]`` in meters, colour optical frame.
+            Unavailable XYZ is ``NaN, NaN, NaN`` and ``c`` is always the
+            original confidence.
+
+    Raises:
+        ValueError: depth image not on the intrinsics' pixel grid (see
+            :func:`compute_person_position`).
+    """
+    joint_z = np.full(num_joints, np.nan, dtype=np.float64)
+    xyzc = np.full((num_joints, 4), np.nan, dtype=np.float32)
+
+    scores = (
+        np.full(num_joints, np.nan)
+        if keypoint_scores is None
+        else np.asarray(keypoint_scores, dtype=np.float32).ravel()
+    )
+    count = min(num_joints, scores.shape[0])
+    xyzc[:count, 3] = scores[:count]
+
+    if (
+        depth_image is None
+        or keypoints_xy is None
+        or intrinsics is None
+        or not intrinsics.is_valid()
+    ):
+        return joint_z, xyzc.ravel()
+
+    image = np.asarray(depth_image)
+    if image.ndim != 2 or image.size == 0:
+        return joint_z, xyzc.ravel()
+    _check_aligned(image, intrinsics)
+
+    points = np.asarray(keypoints_xy, dtype=np.float64).reshape(-1, 2)
+    count = min(count, points.shape[0])
+    # Compared in float32, the precision RTMO scores and the message carry, so
+    # a score equal to the configured threshold is never lost to rounding.
+    threshold = np.float32(params.keypoint_score_threshold)
+    for index in range(count):
+        score = scores[index]
+        if not np.isfinite(score) or score < threshold:
+            continue
+        u, v = points[index, 0], points[index, 1]
+        z = compute_joint_z(image, u, v, params)
+        if not is_valid_depth(z):
+            continue
+        point = deproject_pixel_to_point(u, v, z, intrinsics)
+        if not point.is_valid():
+            continue
+        joint_z[index] = z
+        xyzc[index, 0:3] = (point.x, point.y, point.z)
+
+    return joint_z, xyzc.ravel()
+
+
+def person_z_from_joint_z(joint_z: Sequence[float]) -> float:
+    """Stage 2 of the two-stage median over already computed joint Z values."""
+    values = np.asarray(joint_z, dtype=np.float64).ravel()
+    values = values[np.isfinite(values) & (values > 0.0)]
+    if values.size == 0:
+        return NO_DEPTH
+    return float(np.median(values))
+
+
+def person_position_from_joint_z(
+    joint_z: Sequence[float],
+    bbox_xyxy: Optional[Sequence],
+    intrinsics: Optional[CameraIntrinsics],
+) -> CameraPoint:
+    """Legacy person position from per-joint Z: bbox centre at the median Z."""
+    if intrinsics is None or not intrinsics.is_valid():
+        return NO_POSITION
+    person_z = person_z_from_joint_z(joint_z)
+    if not is_valid_depth(person_z):
+        return NO_POSITION
+    pixel = bbox_center_pixel(bbox_xyxy, intrinsics.width, intrinsics.height)
+    if pixel is None:
+        return NO_POSITION
+    return deproject_pixel_to_point(pixel[0], pixel[1], person_z, intrinsics)
+
+
 def compute_person_position(
     depth_image: Optional[np.ndarray],
     keypoints_xy: Optional[Sequence],
@@ -369,12 +480,7 @@ def compute_person_position(
         return NO_POSITION
 
     image = np.asarray(depth_image)
-    if image.ndim == 2 and image.shape != (intrinsics.height, intrinsics.width):
-        raise ValueError(
-            f"depth image is {image.shape[1]}x{image.shape[0]} but the colour "
-            f"intrinsics are for {intrinsics.width}x{intrinsics.height}; the "
-            "depth image must be aligned to the colour stream"
-        )
+    _check_aligned(image, intrinsics)
 
     person_z = compute_person_z(image, keypoints_xy, keypoint_scores, params)
     if not is_valid_depth(person_z):

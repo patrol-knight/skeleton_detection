@@ -92,11 +92,14 @@ frame:
 ```text
 1. RTMO inference            inference.rtmo_inference.RTMOInference.infer()
 2. tracking (optional)       inference.person_tracking.SkeletonTracker.update()
-3. depth / XYZ               inference.depth_estimation.compute_person_position()
-4. message construction      output.message_builder.build_skeleton_frame()
-5. publish                   /skeleton_detection/frame
-6. visualization (optional)  output.visualization.draw_skeleton_overlay()
-7. statistics                utils.pipeline_stats.PipelineStats.record_frame()
+3. per-joint depth / XYZ     inference.depth_estimation.compute_joint_depths()
+                             (legacy person position from the same joint Z:
+                             person_position_from_joint_z())
+4. official message          output.message_builder.build_skeleton_frame_3d()
+5. publish                   /skeleton_detection/frame        (SkeletonFrame3D)
+6. legacy message + publish  build_skeleton_frame() -> /skeleton_detection/debug_frame
+7. visualization (optional)  output.visualization.draw_skeleton_overlay()
+8. statistics                utils.pipeline_stats.PipelineStats.record_frame()
 ```
 
 Two ordering decisions are load-bearing:
@@ -105,9 +108,11 @@ Two ordering decisions are load-bearing:
   persistent track ID at publication time. No second matching pass is needed.
 - **Depth runs after tracking and before the message is built**, so
   `person_id` and `position`/`depth` in the published message describe the same
-  detection. `_attach_person_position` never modifies boxes, IDs or keypoints.
+  detection. `_attach_joint_depths` never modifies boxes, IDs or keypoints.
+- **Each depth patch is sampled once.** The legacy person Z is the median of
+  the per-joint Z values already computed for the official output.
 
-The `SkeletonFrame` is published **before** any visualization work happens, so
+The `SkeletonFrame3D` is published **before** any visualization work happens, so
 nothing on the visualization path can throttle the robot-facing topic.
 
 ---
@@ -441,6 +446,11 @@ conversion, so the wire conventions live in exactly one place:
 | `position` | `geometry_msgs/Point`, meters, colour optical frame |
 | `depth` | `position.distance`, Euclidean meters |
 
+The table above is the legacy `PersonSkeleton` (debug topic). The official
+`PersonSkeleton3D` carries `person_id`, `score`, `joints_xyzc` (17 × `[X, Y, Z,
+conf]`) and `connections`, and only tracked persons (`person_id >= 0`); see
+[Skeleton Detection V2.1](Skeleton_Detection_V2.1.md).
+
 `SkeletonFrame` adds the header (whose `frame_id` is `camera_frame_id`), the
 `frame_index` counter. `header.stamp` is the only timestamp: the input
 frame's stamp, passed through unchanged.
@@ -453,6 +463,7 @@ currently means; it is logged at start-up so a log reader is never in doubt.
 | Topic | Reliability | History | Depth | Durability |
 |---|---|---|---|---|
 | `/skeleton_detection/frame` | reliable | keep-last | 10 | volatile |
+| `/skeleton_detection/debug_frame` | reliable | keep-last | 10 | volatile |
 | `/skeleton_detection/visualization_image` | `visualization_reliability` (default `best_effort`) | keep-last | **1** | volatile |
 
 Depth 1 on the visualization topic means a slow viewer can never make stale

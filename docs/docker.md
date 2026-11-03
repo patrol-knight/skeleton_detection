@@ -66,6 +66,18 @@ docker build -f docker/Dockerfile -t skeleton_humble_dev .
 This produces the same `skeleton_humble_dev` tag that `docker compose build`
 does, so both share the same layer cache.
 
+`patrolknight_msgs` is cloned from GitHub (`PATROLKNIGHT_MSGS_REF`, default
+`main`). To build against a local checkout instead -- e.g. message changes
+not pushed yet -- override the `patrolknight_msgs` stage, and use a separate
+tag so no other image is replaced:
+
+```bash
+docker build -f docker/Dockerfile \
+  --build-context patrolknight_msgs=../patrolknight_msgs \
+  -t skeleton_detection:v2.1-local .
+SKELETON_IMAGE=skeleton_detection:v2.1-local docker compose up --no-build
+```
+
 ### What the build does
 
 - Installs the pinned ROS 2 / CUDA / OpenMMLab / RealSense / BoxMOT stack
@@ -112,11 +124,12 @@ One service, `skeleton_humble`, which is a transcription of the working
 
 | Setting | Value | Why |
 |---|---|---|
-| `image` | `skeleton_humble_dev` | same tag as the manual `docker build` |
+| `image` | `${SKELETON_IMAGE:-skeleton_humble_dev}` | same tag as the manual `docker build`; override to run another tag |
 | `container_name` | `skeleton_humble` | every documented command names it |
 | `command` | `ros2 launch ... config:=/config/skeleton_detection_node.yaml` | starts the pipeline with the mounted deployment config |
 | `working_dir` | `/ros2_ws` | the Dockerfile `WORKDIR` and colcon workspace root |
-| `networks` | `ros-net` (external `iot_ros-net`) | DDS discovery with the IoT `realsense` / `zenoh_bridge` / `diagnose` containers |
+| `network_mode` / `ipc` | `host` / `host` | same DDS graph and shared memory as the IoT containers |
+| `FASTRTPS_DEFAULT_PROFILES_FILE` | `/config/fastdds.xml` (from `docker/fastdds.xml`) | 64 MB SHM segments, so whole RGBD frames arrive |
 | `deploy.resources.reservations.devices` | `driver: nvidia`, `count: all` | equivalent of `--gpus all` |
 
 **`compose up` starts the pipeline.** Every parameter comes from the mounted
@@ -170,34 +183,31 @@ docker compose -f compose.yaml -f compose.realsense.yaml up -d
 ```
 
 The overridden command selects the packaged `rtmo_node_direct_realsense.yaml`. Only one
-process can own the camera, so stop the IoT `realsense` container first
-(`compose.yaml` still joins the external `iot_ros-net` network; without the
-IoT stack, create it once with `docker network create iot_ros-net`). The
+process can own the camera, so stop the IoT camera container first. The
 node numbers can change after a replug; recreate the container if so.
 
 ### Networking
 
-The service joins the IoT stack's bridge network `iot_ros-net` (created by the
-IoT `./launch.sh`), so DDS discovery reaches the other containers on it
-(`realsense`, `zenoh_bridge`, `diagnose`) with the same `ROS_DOMAIN_ID`. It does
-not use host networking, so ROS tools on the host itself may not discover it;
-inspect topics from inside a container on `iot_ros-net` instead.
-Traffic between containers goes over UDP on that network; no `ipc: host` is
-needed, matching the other IoT services.
+The service uses **host networking and host IPC**, like the IoT containers,
+and the Fast DDS profile `docker/fastdds.xml` (a copy of
+`iot/config/dds/fastdds.xml`): shared-memory segments of 64 MB plus UDP. An
+RGBD frame is several MB; with Fast DDS defaults it does not fit the default
+shared-memory segment and, over best-effort QoS, never arrives. ROS tools on
+the host see the topics when they use the same `ROS_DOMAIN_ID` (both compose
+files read it from the shell, default `0`).
 
 ### GUI tools (rqt) — opt-in
 
 The image is headless and ships no GUI tools. To look at
-`/skeleton_detection/visualization_image`, use the IoT stack's `diagnose`
-container, which has `rqt_image_view` / `rqt_graph`, X11 and the same
-`iot_ros-net` network:
+`/skeleton_detection/visualization_image`, use the IoT stack's `tools`
+container, which has `rqt_image_view` / `rqt_graph`, X11 and host networking:
 
 ```bash
 # from the iot repo root
-./launch.sh up diagnose:=true
+./launch.sh up --tools        # starts the IoT nodes + the tools container
 xhost +local:docker      # on the HOST
 docker compose -f docker/docker-compose.yml --project-directory . \
-  exec -it diagnose bash -c \
+  exec -it tools bash -c \
   "ros2 run rqt_image_view rqt_image_view /skeleton_detection/visualization_image"
 ```
 
@@ -206,6 +216,7 @@ docker compose -f docker/docker-compose.yml --project-directory . \
 ```yaml
 volumes:
   - ./config/skeleton_detection_node.yaml:/config/skeleton_detection_node.yaml:ro
+  - ./docker/fastdds.xml:/config/fastdds.xml:ro
 ```
 
 The source tree is **not** mounted: the container runs the package built into

@@ -1,7 +1,19 @@
 """Convert internal detections into the published ROS messages.
 
 Single owner of the internal -> ROS conversion, so the wire conventions live
-in exactly one place:
+in exactly one place.
+
+Official V2.1 output, ``SkeletonFrame3D`` (:func:`build_skeleton_frame_3d`):
+
+* ``header`` / ``frame_index``: as below, shared with the debug frame.
+* ``persons``: only detections with a tracked ``person_id >= 0``; an
+  untracked (``-1``) detection is omitted. Zero persons is a valid frame.
+* ``joints_xyzc``: 17 COCO joints * ``[X, Y, Z, conf]`` = 68 floats, meters
+  in the colour optical frame (x right, y down, z forward). XYZ is NaN when
+  unavailable; ``conf`` is always the original RTMO joint score.
+* ``connections``: the same flattened COCO topology as ``PersonSkeleton``.
+
+Legacy debug output, ``SkeletonFrame`` (:func:`build_skeleton_frame`):
 
 * ``header``: the input frame's header, passed through unchanged.
   ``header.stamp`` is the only timestamp on the message; it is never replaced
@@ -26,12 +38,19 @@ in exactly one place:
   value -- that is ``position.z``. ``NaN`` when unavailable -- never ``0``.
 """
 
-from typing import List, Sequence
+from typing import List, Optional, Sequence
 
 from geometry_msgs.msg import Point
 from std_msgs.msg import Header
 
-from patrolknight_msgs.msg import PersonSkeleton, SkeletonFrame
+import numpy as np
+
+from patrolknight_msgs.msg import (
+    PersonSkeleton,
+    PersonSkeleton3D,
+    SkeletonFrame,
+    SkeletonFrame3D,
+)
 
 from ..utils.coco_keypoints import COCO_CONNECTIONS_FLAT, NUM_COCO_KEYPOINTS
 from ..inference.rtmo_inference import PersonDetection
@@ -84,4 +103,47 @@ def build_skeleton_frame(
     frame.header = header
     frame.frame_index = int(frame_index)
     frame.persons = [build_person_skeleton(detection) for detection in detections]
+    return frame
+
+
+JOINTS_XYZC_LENGTH = NUM_COCO_KEYPOINTS * 4
+
+
+def build_person_skeleton_3d(
+    detection: PersonDetection, joints_xyzc: Sequence[float]
+) -> PersonSkeleton3D:
+    """One tracked detection + its packed joints -> PersonSkeleton3D."""
+    packed = np.asarray(joints_xyzc, dtype=np.float32).ravel()
+    if packed.size != JOINTS_XYZC_LENGTH:
+        raise ValueError(
+            f"joints_xyzc must hold {JOINTS_XYZC_LENGTH} floats, got {packed.size}"
+        )
+    message = PersonSkeleton3D()
+    message.person_id = int(detection.person_id)
+    message.score = float(detection.score)
+    message.joints_xyzc = packed
+    message.connections = list(COCO_CONNECTIONS_FLAT)
+    return message
+
+
+def build_skeleton_frame_3d(
+    header: Header,
+    frame_index: int,
+    detections: Sequence[PersonDetection],
+    joints_xyzc: Sequence[Optional[Sequence[float]]],
+) -> SkeletonFrame3D:
+    """Official frame: tracked persons only, one packed array per detection.
+
+    ``joints_xyzc[i]`` belongs to ``detections[i]``.
+    """
+    if len(joints_xyzc) != len(detections):
+        raise ValueError("one joints_xyzc entry per detection is required")
+    frame = SkeletonFrame3D()
+    frame.header = header
+    frame.frame_index = int(frame_index)
+    frame.persons = [
+        build_person_skeleton_3d(detection, packed)
+        for detection, packed in zip(detections, joints_xyzc)
+        if int(detection.person_id) >= 0
+    ]
     return frame

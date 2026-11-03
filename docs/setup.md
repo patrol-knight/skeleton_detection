@@ -29,7 +29,7 @@ Required host software:
 - **NVIDIA Container Toolkit.** The compose service reserves `driver: nvidia`
   with `count: all`; both RTMO-M and the OSNet ReID backbone run on `cuda:0`.
 - Optionally, an X server on the host for `rqt_image_view`, run from the IoT
-  `diagnose` container (this image is headless); see
+  `tools` container (this image is headless); see
   [GUI tools](docker.md#gui-tools-rqt--opt-in).
 
 The ROS 2 Humble toolchain, CUDA tools, OpenMMLab stack, RealSense bindings and

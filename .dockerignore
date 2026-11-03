@@ -45,3 +45,6 @@ output/
 *.engine
 *.trt
 *.safetensors
+
+# Local experiment runs
+experiments/

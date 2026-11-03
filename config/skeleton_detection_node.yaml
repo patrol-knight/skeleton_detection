@@ -5,7 +5,12 @@ rtmo_node:
   ros__parameters:
     input_mode: ros_camera
     rgbd_topic: /camera/camera/rgbd
-    output_topic: /skeleton_detection/frame
+    output_topic: /skeleton_detection/frame              # SkeletonFrame3D (official)
+    publish_debug_frame: true
+    debug_output_topic: /skeleton_detection/debug_frame  # legacy SkeletonFrame
+
+    # Joints scoring below this get NaN XYZ and are never depth-sampled.
+    depth_keypoint_score_threshold: 0.30
 
     enable_tracking: true
     with_reid: true
