@@ -272,13 +272,15 @@ output           tracks in state Tracked and is_activated
 
 First-association cost, with $`d_{\mathrm{IoU}} = 1 - \mathrm{IoU}`$ between a
 track's predicted box and a detection, and $`d_{\mathrm{emb}}`$ the cosine
-distance between the track's smoothed feature and the detection's feature:
+distance between the track's smoothed feature and the detection's feature.
+$`\theta_{\mathrm{app}}`$ is `appearance_thresh` and $`\theta_{\mathrm{prox}}`$
+is `proximity_thresh`:
 
 $$
 d_{\mathrm{emb}}' =
 \begin{cases}
-1 & \text{if } d_{\mathrm{emb}} > \texttt{appearance\_thresh}\ (0.25)\\
-1 & \text{if } d_{\mathrm{IoU}} > \texttt{proximity\_thresh}\ (0.7)\\
+1 & \text{if } d_{\mathrm{emb}} > \theta_{\mathrm{app}}\ (0.25)\\
+1 & \text{if } d_{\mathrm{IoU}} > \theta_{\mathrm{prox}}\ (0.7)\\
 d_{\mathrm{emb}} & \text{otherwise}
 \end{cases}
 \qquad
@@ -299,10 +301,12 @@ $$
 0.7 (this package; BoxMOT default 0.5), ReID can rescue a match down to
 IoU ≥ 0.3.
 
-Lost-track lifetime is fixed when `BotSort` is built:
+Lost-track lifetime is fixed when `BotSort` is built, with
+$`N_{\mathrm{lost}}`$ = `max_time_lost`, $`R`$ = `frame_rate` and
+$`N_{\mathrm{buf}}`$ = `track_buffer`:
 
 $$
-\texttt{max\_time\_lost} = \left\lfloor \frac{\texttt{frame\_rate}}{30}\cdot \texttt{track\_buffer} \right\rfloor
+N_{\mathrm{lost}} = \left\lfloor \frac{R}{30}\cdot N_{\mathrm{buf}} \right\rfloor
 = \left\lfloor \frac{55}{30}\cdot 90 \right\rfloor = 165 \text{ frames}
 $$
 
@@ -364,12 +368,13 @@ crop the ReID feature from a half-body, so the track drifts and the person
 gets a new ID on reappearance.
 
 `inference/occlusion_tracking.py` classifies every matched observation from
-one signal:
+one signal, with $`\theta_{\mathrm{vis}}`$ = `keypoint_visibility_threshold` and
+$`\theta_{\mathrm{ratio}}`$ = `visible_ratio_threshold`:
 
 $$
-r = \frac{\#\{i : c_i \ge \texttt{keypoint\_visibility\_threshold}\}}{\#\{i : c_i \text{ finite}\}},
+r = \frac{\#\lbrace i : c_i \ge \theta_{\mathrm{vis}}\rbrace}{\#\lbrace i : c_i \text{ finite}\rbrace},
 \qquad
-\text{OCCLUDED} \iff r < \texttt{visible\_ratio\_threshold}
+\text{OCCLUDED} \iff r < \theta_{\mathrm{ratio}}
 $$
 
 Defaults are 0.30 and 0.50. If scores are missing or non-finite, the
@@ -432,8 +437,8 @@ The patch is the 3 × 3 window around the rounded joint pixel, clipped at the
 image edge:
 
 $$
-k_i = \operatorname{round}(u_i),\quad r_i = \operatorname{round}(v_i),\qquad
-P_i = \{\alpha\,D[r, k] : |r - r_i| \le 1,\ |k - k_i| \le 1,\ 0 \le r < H,\ 0 \le k < W\}
+k_i = \mathrm{round}(u_i),\quad r_i = \mathrm{round}(v_i),\qquad
+P_i = \lbrace\alpha\,D[r, k] : |r - r_i| \le 1,\ |k - k_i| \le 1,\ 0 \le r < H,\ 0 \le k < W\rbrace
 $$
 
 A joint whose rounded pixel lies outside the image gives no sample. Samples
@@ -441,9 +446,9 @@ are scaled to meters **before** filtering, so the bounds are always in
 meters. Then:
 
 $$
-S_i = \{z \in P_i : z \text{ finite},\ z > 0,\ z \ge z_{\min} \text{ if } z_{\min} > 0,\ z \le z_{\max} \text{ if } z_{\max} > 0\},
+S_i = \lbrace z \in P_i : z \text{ finite},\ z > 0,\ z \ge z_{\min} \text{ if } z_{\min} > 0,\ z \le z_{\max} \text{ if } z_{\max} > 0\rbrace,
 \qquad
-z_i = \operatorname{median}(S_i)
+z_i = \mathrm{median}(S_i)
 $$
 
 Zero is the RealSense "no measurement" code, so it is always rejected with NaN
@@ -453,8 +458,8 @@ contributes up to 4 or 6 samples instead of 9.
 ### Stage 2: person Z
 
 $$
-J = \{i : c_i \ge \tau,\ S_i \ne \emptyset\},\qquad
-Z_p = \operatorname{median}_{i \in J}(z_i)
+J = \lbrace i : c_i \ge \tau,\ S_i \ne \emptyset\rbrace,\qquad
+Z_p = \mathrm{median}_{i \in J}(z_i)
 $$
 
 Both stages use the median, not the mean. Depth around a person is bimodal:
@@ -468,7 +473,7 @@ The person is anchored at the centre of the box **clipped to the image**
 sampled from:
 
 $$
-\tilde x_1 = \operatorname{clip}(x_1, 0, W),\ \dots,\qquad
+\tilde x_1 = \mathrm{clip}(x_1, 0, W),\ \dots,\qquad
 u_p = \tfrac{1}{2}(\tilde x_1 + \tilde x_2),\quad v_p = \tfrac{1}{2}(\tilde y_1 + \tilde y_2)
 $$
 
