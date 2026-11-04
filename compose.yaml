@@ -3,8 +3,10 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    # Override to run another tag, e.g. SKELETON_IMAGE=skeleton_detection:v2.1-local
-    image: ${SKELETON_IMAGE:-skeleton_humble_dev}
+    # Always build from this checkout (cached layers make repeat runs quick),
+    # so `docker compose up` never runs a stale or unrelated local image.
+    image: skeleton_detection:v2.1
+    pull_policy: build
 
     container_name: skeleton_humble
 
@@ -24,7 +26,7 @@ services:
     # stack and this container only subscribes to its RGBD topic, so it needs
     # no device access and no display. GPU access comes from the `deploy`
     # block below, not from privileged mode. Direct `input_mode: realsense`
-    # needs extra device access -- see docs/docker.md.
+    # needs extra device access -- see docs/Skeleton_Detection_V2.0.md.
 
     # Same DDS setup as the IoT containers: host network + host IPC, and a
     # Fast DDS profile whose 64 MB shared-memory segments fit a whole RGBD

@@ -8,10 +8,10 @@ these exact versions**. It is the reference to read before changing a pin in
 
 It deliberately does **not** describe how the subsystem works. For that, see:
 
-- [`../docs/architecture.md`](../docs/architecture.md) — module
-  responsibilities, data flow, execution order
-- [`../docs/implementation.md`](../docs/implementation.md) — model assets,
-  coordinate conventions, internal data structures
+- [`../docs/Skeleton_Detection_V2.0.md`](../docs/Skeleton_Detection_V2.0.md) — data
+  flow, execution order, model assets, coordinate conventions
+- [`../docs/Skeleton_Detection_V2.1.md`](../docs/Skeleton_Detection_V2.1.md) — the
+  current per-joint 3D output
 
 Every version below was read from the current [`Dockerfile`](Dockerfile),
 [`fetch_models.py`](fetch_models.py), [`verify_image.py`](verify_image.py),
@@ -63,7 +63,7 @@ image (e.g. to `ros:humble-ros-core`) is known to need them added.
 | `ros-humble-builtin-interfaces` | `builtin_interfaces/Time` — tests only |
 | `ros-humble-ament-cmake`, `ros-humble-rosidl-default-generators` | **build-time**, to build `patrolknight_msgs` (an `ament_cmake` interface package) |
 | `ros-humble-rmw-fastrtps-cpp` | the default RMW; nothing in this package selects another (see [Not dependencies](#not-dependencies)) |
-| `git` | **build-time**, `git clone` of `patrolknight_msgs` |
+| `git` | **build-time**, `git fetch` of `patrolknight_msgs` |
 | `cmake`, `python3-colcon-common-extensions` | **build-time**, `colcon build` of `patrolknight_msgs` and this package |
 | `python3-pytest` (6.2.5) | `<test_depend>` in `package.xml`; running `test/` |
 
@@ -99,7 +99,7 @@ they are hard apt dependencies of `cv_bridge`.
 
 No GUI tools (rqt) are installed: the image is headless. View
 `/skeleton_detection/visualization_image` from a separate viewer container,
-e.g. the IoT stack's `diagnose` service (see [docs/docker.md](../docs/docker.md#gui-tools-rqt--opt-in)).
+e.g. the IoT stack's `tools` service (see [Viewing the overlay](../docs/Skeleton_Detection_V2.0.md#65-viewing-the-overlay)).
 
 ### `package.xml` → where each dependency comes from
 
@@ -119,15 +119,17 @@ e.g. the IoT stack's `diagnose` service (see [docs/docker.md](../docs/docker.md#
 
 ## patrolknight_msgs and this package
 
-`patrolknight_msgs` defines `SkeletonFrame` and `PersonSkeleton`, the node's
+`patrolknight_msgs` defines `SkeletonFrame3D` / `PersonSkeleton3D` (official
+output) and `SkeletonFrame` / `PersonSkeleton` (legacy debug output), the node's
 output messages (imported by `iot_node.py` and `output/message_builder.py`).
 It is **not** an apt package; it lives in its own repository and is built from
 source at image build time into its own install space:
 
 ```bash
-git clone --depth 1 --branch ${PATROLKNIGHT_MSGS_REF} \
-    https://github.com/patrol-knight/patrolknight_msgs.git \
-    /tmp/patrolknight_ws/src/patrolknight_msgs
+git init -q /src && cd /src
+git fetch -q --depth 1 \
+    https://github.com/patrol-knight/patrolknight_msgs.git ${PATROLKNIGHT_MSGS_REF}
+git checkout -q FETCH_HEAD    # copied to /tmp/patrolknight_ws/src/patrolknight_msgs
 . /opt/ros/humble/setup.sh
 cd /tmp/patrolknight_ws
 colcon build --merge-install --install-base /opt/patrolknight_msgs \
@@ -137,7 +139,7 @@ colcon build --merge-install --install-base /opt/patrolknight_msgs \
 | | |
 |---|---|
 | Source | `github.com/patrol-knight/patrolknight_msgs` |
-| Version | build arg `PATROLKNIGHT_MSGS_REF`, default **`main`** — *(unpinned)*: whatever `main` points to at build time |
+| Version | build arg `PATROLKNIGHT_MSGS_REF`, **pinned** to commit `d5c82cc7f68048f04626c866c309055f2e25b92d` (adds the V2.1 types); a branch or tag also works but is cached by name |
 | Its own deps | `ament_cmake`, `rosidl_default_generators` (build), `geometry_msgs`, `std_msgs`, `rosidl_default_runtime` — all in the base image |
 | Install space | `/opt/patrolknight_msgs`, sourced by the `ENTRYPOINT` and `.bashrc` |
 
@@ -313,7 +315,7 @@ python3 -m pip install --no-cache-dir -c /etc/pip-constraints.txt "boxmot==19.0.
 
 Used by `inference/person_tracking.py` for person tracking, and extended by
 `inference/occlusion_tracking.py`. See
-[`../docs/architecture.md`](../docs/architecture.md) for what the tracking
+[Tracking](../docs/Skeleton_Detection_V2.0.md#3-tracking) for what the tracking
 stage does.
 
 ### The version pin is load-bearing
@@ -449,7 +451,8 @@ needed.
 **Device access:** the wheel uses the V4L2 backend, so the camera's
 `/dev/video*` and `/dev/media*` nodes are enough (verified 2026-09-30); no
 `privileged` and no `/dev/bus/usb` are needed. The default compose grants
-none of this — direct mode is opt-in, see `docs/docker.md`. **No udev rules
+none of this — direct mode is opt-in, see
+[Running recipes](../docs/Skeleton_Detection_V2.0.md#64-running-recipes). **No udev rules
 are installed inside the container.**
 
 **Verified device** (2026-09-07): RealSense D456, serial `308222301472`,
@@ -605,9 +608,9 @@ The hard edges, in priority order:
 7. **torch/torchvision must stay a matched `+cu130` aarch64 pair**, or the
    CUDA 13 / GB10 build is invalidated.
 8. **`pyrealsense2` needs an aarch64 cp310 wheel**, or it builds from source.
-9. **`patrolknight_msgs` tracks `main`** unless `PATROLKNIGHT_MSGS_REF` is set.
-   A message-definition change upstream changes the node's output contract on
-   the next rebuild without any change in this repository.
+9. **`patrolknight_msgs` is pinned by commit SHA** (`PATROLKNIGHT_MSGS_REF`).
+   An upstream message change reaches the image only when the SHA is bumped
+   here; with a branch name, Docker's layer cache would keep an old fetch.
 
 [`verify_image.py`](verify_image.py) enforces 1, 2, 4, 5, 7 and the asset
 layout at **build time**, so a bad resolution fails `docker build` instead of
@@ -649,7 +652,7 @@ plugin imports `_pytest.scope`, which exists only in pytest 7+, so bare
 `pytest` dies at start-up with `ModuleNotFoundError: No module named
 '_pytest.scope'`. Run the suite with `-p no:anyio` (or
 `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`). This is a packaging mismatch in the image,
-not a test failure — see [`../docs/debugging.md`](../docs/debugging.md).
+not a test failure — see [Tests](../docs/Skeleton_Detection_V2.0.md#68-tests).
 
 ---
 

@@ -1,10 +1,17 @@
-# patrolknight_msgs source. By default the upstream repo at
-# PATROLKNIGHT_MSGS_REF; a local checkout replaces this whole stage with
+# patrolknight_msgs source: the upstream repo at PATROLKNIGHT_MSGS_REF, a
+# commit SHA (or branch/tag). The default is the upstream main commit that
+# added SkeletonFrame3D/PersonSkeleton3D. Pinning a SHA keeps builds
+# reproducible, and changing it invalidates this layer's cache; a branch name
+# would keep reusing whatever an earlier build cached. A local checkout
+# replaces this whole stage with
 #   docker build --build-context patrolknight_msgs=../patrolknight_msgs ...
 FROM ros:humble-ros-base AS patrolknight_msgs_git
-ARG PATROLKNIGHT_MSGS_REF=main
-RUN git clone --depth 1 --branch ${PATROLKNIGHT_MSGS_REF} \
-        https://github.com/patrol-knight/patrolknight_msgs.git /src
+ARG PATROLKNIGHT_MSGS_REF=d5c82cc7f68048f04626c866c309055f2e25b92d
+RUN git init -q /src && cd /src \
+    && git fetch -q --depth 1 \
+        https://github.com/patrol-knight/patrolknight_msgs.git ${PATROLKNIGHT_MSGS_REF} \
+    && git checkout -q FETCH_HEAD \
+    && rm -rf .git
 
 FROM scratch AS patrolknight_msgs
 COPY --from=patrolknight_msgs_git /src/ /
