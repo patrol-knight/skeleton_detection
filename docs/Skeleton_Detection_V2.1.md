@@ -155,7 +155,7 @@ Implemented in `compute_joint_depths()` and `compute_joint_z()` in
 ### Gate
 
 $$
-\text{sample joint } i \iff c_i \text{ is finite} \ \wedge\ \operatorname{f32}(c_i) \ge \operatorname{f32}(\tau)
+\text{sample joint } i \iff c_i \text{ is finite} \;\wedge\; \mathrm{f32}(c_i) \ge \mathrm{f32}(\tau)
 $$
 
 | Setting | Value |
@@ -184,8 +184,11 @@ flowchart TD
 The patch is centred on the joint's rounded pixel and clipped at the border:
 
 $$
-k_i = \operatorname{round}(u_i),\quad r_i = \operatorname{round}(v_i),\qquad
-P_i = \{\alpha\,D[r, k] : r \in [\max(0, r_i - 1), \min(H-1, r_i + 1)],\ k \in [\max(0, k_i - 1), \min(W-1, k_i + 1)]\}
+k_i = \mathrm{round}(u_i), \qquad r_i = \mathrm{round}(v_i), \qquad
+P_i = \left\lbrace \alpha D[r,k] \mid
+r \in [\max(0,r_i-1), \min(H-1,r_i+1)], \;
+k \in [\max(0,k_i-1), \min(W-1,k_i+1)]
+\right\rbrace
 $$
 
 - Rounding is Python `round()`, which sends halves to the even integer
@@ -201,9 +204,12 @@ $$
 Samples are converted to meters first, then filtered:
 
 $$
-S_i = \{ z \in P_i : z \text{ finite} \ \wedge\ z > 0 \ \wedge\ (z_{\min} \le 0 \vee z \ge z_{\min}) \ \wedge\ (z_{\max} \le 0 \vee z \le z_{\max}) \},
-\qquad
-Z_i = \operatorname{median}(S_i)
+S_i = \left\lbrace z \in P_i \mid
+z \text{ is finite} \;\wedge\; z > 0
+\;\wedge\; (z_{\min} \le 0 \vee z \ge z_{\min})
+\;\wedge\; (z_{\max} \le 0 \vee z \le z_{\max})
+\right\rbrace, \qquad
+Z_i = \mathrm{median}(S_i)
 $$
 
 $`z_{\min}, z_{\max}`$ are `depth_min_m`, `depth_max_m` (default 0 = disabled).
@@ -228,18 +234,16 @@ The median supplies only Z. X and Y come from the joint's **own** sub-pixel
 UV (not the rounded patch centre, and not the box centre):
 
 $$
-X_i = \frac{(u_i - c_x)\,Z_i}{f_x},\qquad
-Y_i = \frac{(v_i - c_y)\,Z_i}{f_y},\qquad
-Z_i = \operatorname{median}(S_i)
+X_i = \frac{(u_i - c_x)Z_i}{f_x}, \qquad
+Y_i = \frac{(v_i - c_y)Z_i}{f_y}, \qquad
+Z_i = \mathrm{median}(S_i)
 $$
 
 $`Z_i`$ is optical-axis depth, not Euclidean distance. The model is pure
 pinhole from `CameraInfo.k`; distortion `d` is ignored. The joint's
 confidence is stored unchanged:
 
-$$
-\texttt{joints\_xyzc}[4i : 4i+4] = [X_i,\ Y_i,\ Z_i,\ c_i]
-$$
+`joints_xyzc[4*i : 4*i+4] = [X_i, Y_i, Z_i, c_i]`
 
 ### Reuse for the legacy person depth
 
@@ -248,11 +252,14 @@ $`Z_i`$ where a joint was sampled and valid, NaN elsewhere.
 `person_position_from_joint_z()` builds the legacy point from it without
 reading the depth image again:
 
-$$
-Z_p = \operatorname{median}\{Z_i : Z_i \text{ finite},\ Z_i > 0\},\qquad
-(u_p, v_p) = \text{centre of the bbox clipped to } [0, W] \times [0, H]
-$$
+Let $J$ denote `joints_xyzc`. For each COCO joint $i = 0, \ldots, 16$,
 
+$$
+J[4i] = X_i, \quad
+J[4i+1] = Y_i, \quad
+J[4i+2] = Z_i, \quad
+J[4i+3] = c_i.
+$$
 $$
 \texttt{position} = \left(\tfrac{(u_p - c_x) Z_p}{f_x},\ \tfrac{(v_p - c_y) Z_p}{f_y},\ Z_p\right),\qquad
 \texttt{depth} = \lVert \texttt{position} \rVert_2
