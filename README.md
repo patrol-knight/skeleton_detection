@@ -40,11 +40,17 @@ RTMO and tracking run once per frame; all outputs reuse that result.
   detections are matched by the cheaper of IoU distance and OSNet appearance
   distance, solved as an assignment problem:
 
-  ```math
-  d_{\mathrm{IoU}} = 1 - \mathrm{IoU},\qquad
-  c = \min\left(d_{\mathrm{IoU}},\ d_{\mathrm{emb}}\right),\quad
-  d_{\mathrm{emb}} := 1 \text{ if } d_{\mathrm{emb}} > 0.25 \text{ or } d_{\mathrm{IoU}} > 0.7
-  ```
+  $$
+  \begin{aligned}
+  d_{\mathrm{IoU}} &= 1 - \mathrm{IoU} \\
+  \tilde{d}_{\mathrm{emb}} &=
+  \begin{cases}
+  1, & d_{\mathrm{emb}} > 0.25 \text{ or } d_{\mathrm{IoU}} > 0.7 \\
+  d_{\mathrm{emb}}, & \text{otherwise}
+  \end{cases} \\
+  c &= \min(d_{\mathrm{IoU}}, \tilde{d}_{\mathrm{emb}})
+  \end{aligned}
+  $$
 
   ReID features are extracted every second frame and smoothed per track as
   $`f \leftarrow \mathrm{normalize}(0.9 f + 0.1 f_{\mathrm{new}})`$. A lost
@@ -57,16 +63,20 @@ RTMO and tracking run once per frame; all outputs reuse that result.
   scaled to meters, invalid samples (0, NaN, ±inf) are removed, and the
   median of the rest is the joint's Z:
 
-  ```math
-  Z_i = \operatorname{median}\{\, z \in P_{3\times3}(u_i, v_i) : z \text{ finite},\ z > 0 \,\}
-  ```
+  $$
+  Z_i = \operatorname{median}\left\{
+  z \in P_{3\times3}(u_i, v_i) \mid z > 0,\; z \text{ is finite}
+  \right\}
+  $$
 
 - **Deprojection.** The joint's own pixel is lifted into the camera optical
   frame (X right, Y down, Z forward, meters) with the colour intrinsics:
 
-  ```math
-  X_i = \frac{(u_i - c_x)\,Z_i}{f_x},\qquad Y_i = \frac{(v_i - c_y)\,Z_i}{f_y}
-  ```
+  $$
+  X_i = \frac{(u_i - c_x)\,Z_i}{f_x},
+  \qquad
+  Y_i = \frac{(v_i - c_y)\,Z_i}{f_y}
+  $$
 
   and packed as `joints_xyzc[4i : 4i+4] = [X_i, Y_i, Z_i, c_i]` for COCO
   joint $`i = 0..16`$ (68 floats per person).

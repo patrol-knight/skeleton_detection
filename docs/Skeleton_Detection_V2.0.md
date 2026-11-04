@@ -274,7 +274,7 @@ First-association cost, with $`d_{\mathrm{IoU}} = 1 - \mathrm{IoU}`$ between a
 track's predicted box and a detection, and $`d_{\mathrm{emb}}`$ the cosine
 distance between the track's smoothed feature and the detection's feature:
 
-```math
+$$
 d_{\mathrm{emb}}' =
 \begin{cases}
 1 & \text{if } d_{\mathrm{emb}} > \texttt{appearance\_thresh}\ (0.25)\\
@@ -283,7 +283,7 @@ d_{\mathrm{emb}} & \text{otherwise}
 \end{cases}
 \qquad
 c = \min\!\left(d_{\mathrm{IoU}},\ d_{\mathrm{emb}}'\right)
-```
+$$
 
 On a frame without ReID, $`c = d_{\mathrm{IoU}}`$. `fuse_first_associate` stays
 at its BoxMOT default (`False`), so the first stage does not fuse the score.
@@ -291,9 +291,9 @@ at its BoxMOT default (`False`), so the first stage does not fuse the score.
 Unconfirmed-track cost uses the score-fused IoU and half the embedding
 distance, with the same two masks:
 
-```math
+$$
 c_{\mathrm{unc}} = \min\!\left(1 - \mathrm{IoU}\cdot s,\ \tfrac{1}{2}d_{\mathrm{emb}}\ \text{(masked)}\right)
-```
+$$
 
 `proximity_thresh` is an IoU **distance**: raising it relaxes the gate. At
 0.7 (this package; BoxMOT default 0.5), ReID can rescue a match down to
@@ -301,10 +301,10 @@ IoU ≥ 0.3.
 
 Lost-track lifetime is fixed when `BotSort` is built:
 
-```math
+$$
 \texttt{max\_time\_lost} = \left\lfloor \frac{\texttt{frame\_rate}}{30}\cdot \texttt{track\_buffer} \right\rfloor
 = \left\lfloor \frac{55}{30}\cdot 90 \right\rfloor = 165 \text{ frames}
-```
+$$
 
 `frame_rate` is `tracking_frame_rate`, or 55 when it is ≤ 0. 165 frames is
 ≈3.0 s at 55 fps; the lifetime is counted in processed frames, so at a 30 Hz
@@ -366,11 +366,11 @@ gets a new ID on reappearance.
 `inference/occlusion_tracking.py` classifies every matched observation from
 one signal:
 
-```math
+$$
 r = \frac{\#\{i : c_i \ge \texttt{keypoint\_visibility\_threshold}\}}{\#\{i : c_i \text{ finite}\}},
 \qquad
 \text{OCCLUDED} \iff r < \texttt{visible\_ratio\_threshold}
-```
+$$
 
 Defaults are 0.30 and 0.50. If scores are missing or non-finite, the
 criterion is skipped (detection stays `NORMAL`) and a throttled warning is
@@ -431,20 +431,20 @@ compares both in float32.)
 The patch is the 3 × 3 window around the rounded joint pixel, clipped at the
 image edge:
 
-```math
+$$
 k_i = \operatorname{round}(u_i),\quad r_i = \operatorname{round}(v_i),\qquad
 P_i = \{\alpha\,D[r, k] : |r - r_i| \le 1,\ |k - k_i| \le 1,\ 0 \le r < H,\ 0 \le k < W\}
-```
+$$
 
 A joint whose rounded pixel lies outside the image gives no sample. Samples
 are scaled to meters **before** filtering, so the bounds are always in
 meters. Then:
 
-```math
+$$
 S_i = \{z \in P_i : z \text{ finite},\ z > 0,\ z \ge z_{\min} \text{ if } z_{\min} > 0,\ z \le z_{\max} \text{ if } z_{\max} > 0\},
 \qquad
 z_i = \operatorname{median}(S_i)
-```
+$$
 
 Zero is the RealSense "no measurement" code, so it is always rejected with NaN
 and ±∞. A joint with $`S_i = \emptyset`$ is dropped. An edge joint
@@ -452,10 +452,10 @@ contributes up to 4 or 6 samples instead of 9.
 
 ### Stage 2: person Z
 
-```math
+$$
 J = \{i : c_i \ge \tau,\ S_i \ne \emptyset\},\qquad
 Z_p = \operatorname{median}_{i \in J}(z_i)
-```
+$$
 
 Both stages use the median, not the mean. Depth around a person is bimodal:
 a pixel is on the person or on the background behind them. A mean would place
@@ -467,14 +467,14 @@ The person is anchored at the centre of the box **clipped to the image**
 (RTMO boxes may extend past the frame), i.e. the visible part the joints
 sampled from:
 
-```math
+$$
 \tilde x_1 = \operatorname{clip}(x_1, 0, W),\ \dots,\qquad
 u_p = \tfrac{1}{2}(\tilde x_1 + \tilde x_2),\quad v_p = \tfrac{1}{2}(\tilde y_1 + \tilde y_2)
-```
+$$
 
-```math
+$$
 X = \frac{(u_p - c_x)\,Z_p}{f_x},\qquad Y = \frac{(v_p - c_y)\,Z_p}{f_y},\qquad Z = Z_p
-```
+$$
 
 Deprojection is pure pinhole: lens distortion is ignored (the node logs the
 model and coefficients at start-up in `realsense` mode). The colour
@@ -483,9 +483,9 @@ all in the colour camera.
 
 ### Optical-axis Z vs the legacy `depth` field
 
-```math
+$$
 \texttt{position.z} = Z_p,\qquad \texttt{depth} = \sqrt{X^2 + Y^2 + Z^2}
-```
+$$
 
 A RealSense depth value is the distance to the plane perpendicular to the
 optical axis, i.e. Z. `PersonSkeleton.depth` is the Euclidean

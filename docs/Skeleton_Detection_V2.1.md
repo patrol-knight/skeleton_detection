@@ -154,9 +154,9 @@ Implemented in `compute_joint_depths()` and `compute_joint_z()` in
 
 ### Gate
 
-```math
+$$
 \text{sample joint } i \iff c_i \text{ is finite} \ \wedge\ \operatorname{f32}(c_i) \ge \operatorname{f32}(\tau)
-```
+$$
 
 | Setting | Value |
 |---|---|
@@ -183,10 +183,10 @@ flowchart TD
 
 The patch is centred on the joint's rounded pixel and clipped at the border:
 
-```math
+$$
 k_i = \operatorname{round}(u_i),\quad r_i = \operatorname{round}(v_i),\qquad
 P_i = \{\alpha\,D[r, k] : r \in [\max(0, r_i - 1), \min(H-1, r_i + 1)],\ k \in [\max(0, k_i - 1), \min(W-1, k_i + 1)]\}
-```
+$$
 
 - Rounding is Python `round()`, which sends halves to the even integer
   (`u = 2.5` → column 2).
@@ -200,11 +200,11 @@ P_i = \{\alpha\,D[r, k] : r \in [\max(0, r_i - 1), \min(H-1, r_i + 1)],\ k \in [
 
 Samples are converted to meters first, then filtered:
 
-```math
+$$
 S_i = \{ z \in P_i : z \text{ finite} \ \wedge\ z > 0 \ \wedge\ (z_{\min} \le 0 \vee z \ge z_{\min}) \ \wedge\ (z_{\max} \le 0 \vee z \le z_{\max}) \},
 \qquad
 Z_i = \operatorname{median}(S_i)
-```
+$$
 
 $`z_{\min}, z_{\max}`$ are `depth_min_m`, `depth_max_m` (default 0 = disabled).
 With $`S_i = \emptyset`$ the joint is NaN. NumPy's median of an even count is
@@ -227,19 +227,19 @@ wall.
 The median supplies only Z. X and Y come from the joint's **own** sub-pixel
 UV (not the rounded patch centre, and not the box centre):
 
-```math
+$$
 X_i = \frac{(u_i - c_x)\,Z_i}{f_x},\qquad
 Y_i = \frac{(v_i - c_y)\,Z_i}{f_y},\qquad
 Z_i = \operatorname{median}(S_i)
-```
+$$
 
 $`Z_i`$ is optical-axis depth, not Euclidean distance. The model is pure
 pinhole from `CameraInfo.k`; distortion `d` is ignored. The joint's
 confidence is stored unchanged:
 
-```math
+$$
 \texttt{joints\_xyzc}[4i : 4i+4] = [X_i,\ Y_i,\ Z_i,\ c_i]
-```
+$$
 
 ### Reuse for the legacy person depth
 
@@ -248,15 +248,15 @@ $`Z_i`$ where a joint was sampled and valid, NaN elsewhere.
 `person_position_from_joint_z()` builds the legacy point from it without
 reading the depth image again:
 
-```math
+$$
 Z_p = \operatorname{median}\{Z_i : Z_i \text{ finite},\ Z_i > 0\},\qquad
 (u_p, v_p) = \text{centre of the bbox clipped to } [0, W] \times [0, H]
-```
+$$
 
-```math
+$$
 \texttt{position} = \left(\tfrac{(u_p - c_x) Z_p}{f_x},\ \tfrac{(v_p - c_y) Z_p}{f_y},\ Z_p\right),\qquad
 \texttt{depth} = \lVert \texttt{position} \rVert_2
-```
+$$
 
 This is the V2.0 two-stage median over the same eligible samples
 (`test_legacy_position_from_joint_z_matches_original`), so the debug message
@@ -334,9 +334,9 @@ use the debug topic for those.
 
 ### `joints_xyzc` layout
 
-```math
+$$
 \texttt{joints\_xyzc}[4i] = X_i,\quad [4i+1] = Y_i,\quad [4i+2] = Z_i,\quad [4i+3] = c_i,\qquad i = 0, \dots, 16
-```
+$$
 
 | i | joint | slots | i | joint | slots | i | joint | slots |
 |---|---|---|---|---|---|---|---|---|
