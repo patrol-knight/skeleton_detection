@@ -372,7 +372,11 @@ one signal, with $`\theta_{\mathrm{vis}}`$ = `keypoint_visibility_threshold` and
 $`\theta_{\mathrm{ratio}}`$ = `visible_ratio_threshold`:
 
 $$
-r = \frac{\#\lbrace i : c_i \ge \theta_{\mathrm{vis}}\rbrace}{\#\lbrace i : c_i \text{ finite}\rbrace},
+r = \frac{
+  \left\lvert \lbrace i : c_i \ge \theta_{\mathrm{vis}} \rbrace \right\rvert
+}{
+  \left\lvert \lbrace i : c_i \text{ is finite} \rbrace \right\rvert
+},
 \qquad
 \text{OCCLUDED} \iff r < \theta_{\mathrm{ratio}}
 $$
