@@ -100,7 +100,8 @@ class RTMONode(Node):
 
         self.bridge = CvBridge()
         self.frame_index = 0
-        self.stats = PipelineStats()
+        # Window data feeds only the periodic stats log; skip it when that is off.
+        self.stats = PipelineStats(window_enabled=self.stats_log_period_sec > 0)
         self.capture: Optional[RealSenseCapture] = None
         self._rgbd_configured = False
         self.camera_intrinsics: Optional[CameraIntrinsics] = None
@@ -190,7 +191,8 @@ class RTMONode(Node):
         self.declare_parameter("visualization_output_dir", DEFAULT_VISUALIZATION_DIR)
         self.declare_parameter("visualization_image_format", "jpg")
         # --- logging ---
-        self.declare_parameter("stats_log_period_sec", 1.0)
+        # <= 0 disables the periodic stats line
+        self.declare_parameter("stats_log_period_sec", 60.0)
         self.declare_parameter("log_every_frame", False)
         self.declare_parameter("run_duration_sec", 0.0)
 
@@ -645,8 +647,6 @@ class RTMONode(Node):
         ``depth_image`` is raw depth aligned to colour, or ``None``. RTMO and
         tracking run once; every output is built from that one result.
         """
-        total_start = time.perf_counter()
-
         start = time.perf_counter()
         detections: List[PersonDetection] = self.inference.infer(frame_bgr)
         inference_ms = (time.perf_counter() - start) * 1000.0
@@ -678,11 +678,9 @@ class RTMONode(Node):
 
         self._handle_visualization(frame_bgr, frame_msg.persons, header)
 
-        total_ms = (time.perf_counter() - total_start) * 1000.0
         self.stats.record_frame(
             inference_ms=inference_ms,
             tracking_ms=tracking_ms,
-            total_ms=total_ms,
             person_count=len(frame_msg.persons),
             active_tracks=active_tracks,
         )
@@ -823,15 +821,6 @@ class RTMONode(Node):
             self._emit("No frames were processed")
             return
 
-        def series(name: str, data) -> List[str]:
-            if not data:
-                return []
-            return [
-                f"  {name:<17} : mean {data['mean']:.2f} ms | median "
-                f"{data['median']:.2f} | p95 {data['p95']:.2f} | "
-                f"min/max {data['min']:.2f}/{data['max']:.2f}"
-            ]
-
         source = {
             INPUT_MODE_ROS_TOPIC: self.input_topic,
             INPUT_MODE_ROS_CAMERA: self.rgbd_topic,
@@ -855,9 +844,6 @@ class RTMONode(Node):
             "(CUDA warm-up)",
             f"  persons/frame     : {summary['mean_persons']:.2f} mean",
         ]
-        lines += series("rtmo_inference_ms", summary["inference"])
-        lines += series("tracking_ms", summary["tracking"])
-        lines += series("total_ms", summary["total"])
         if self.tracker is not None:
             lines.append(
                 f"  mean active tracks: {summary['mean_active_tracks']:.2f}"

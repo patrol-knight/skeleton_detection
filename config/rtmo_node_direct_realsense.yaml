@@ -139,6 +139,6 @@ rtmo_node:
     save_visualization_images: false
 
     # --- logging ---
-    stats_log_period_sec: 1.0     # periodic summary instead of per-frame logs
+    stats_log_period_sec: 60.0     # periodic summary instead of per-frame logs
     log_every_frame: false
     run_duration_sec: 0.0         # >0 = stop automatically (benchmark runs)
