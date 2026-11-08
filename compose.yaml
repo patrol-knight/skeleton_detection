@@ -29,8 +29,8 @@ services:
     # needs extra device access -- see docs/Skeleton_Detection_V2.0.md.
 
     # Same DDS setup as the IoT containers: host network + host IPC, and a
-    # Fast DDS profile whose 64 MB shared-memory segments fit a whole RGBD
-    # frame. With Fast DDS defaults the RGBD messages do not arrive.
+    # Fast DDS profile with explicit shared-memory + UDP transports
+    # (docker/fastdds.xml). With Fast DDS defaults the RGBD messages do not arrive.
     network_mode: host
     ipc: host
 
