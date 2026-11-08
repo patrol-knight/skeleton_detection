@@ -80,6 +80,54 @@ from typing import Optional, Sequence, Tuple
 
 import numpy as np
 
+# --- Per-joint depth sampling method (see compute_person_joint_depths) -------
+# "median" restores the existing baseline.
+DEPTH_SAMPLING_METHOD = "median"
+
+# Method D patch, separate from the baseline 3x3 (DepthParams.window).
+DEPTH_PATCH_SIZE = 7
+DEPTH_PIXEL_SIGMA_PX = 6.0
+
+# Half-width of a camera-depth interval, NOT a 3D sphere radius.
+PERSON_DEPTH_RADIUS_M = 1.5
+PERSON_DEPTH_SIGMA_M = 0.2
+MIN_PERSON_DEPTH_SCORE = 0.01
+
+# Max depth span of one cluster (greedy fixed-span grouping, no chaining).
+DEPTH_CLUSTER_TOLERANCE_M = 0.20
+MIN_CLUSTER_PIXELS = 2
+# Fewer valid baseline joints than this -> the whole person keeps the baseline.
+MIN_REFERENCE_JOINTS = 5
+
+DEPTH_SAMPLING_METHODS = ("person_cluster", "median")
+
+
+def _validate_depth_sampling_config() -> None:
+    """Fail at import time instead of silently running with a broken setting."""
+    problems = []
+    if DEPTH_SAMPLING_METHOD not in DEPTH_SAMPLING_METHODS:
+        problems.append(f"DEPTH_SAMPLING_METHOD={DEPTH_SAMPLING_METHOD!r} not in {DEPTH_SAMPLING_METHODS}")
+    if not (isinstance(DEPTH_PATCH_SIZE, int) and DEPTH_PATCH_SIZE >= 1 and DEPTH_PATCH_SIZE % 2 == 1):
+        problems.append(f"DEPTH_PATCH_SIZE={DEPTH_PATCH_SIZE!r} must be an odd int >= 1")
+    for name, value in (("DEPTH_PIXEL_SIGMA_PX", DEPTH_PIXEL_SIGMA_PX),
+                        ("PERSON_DEPTH_SIGMA_M", PERSON_DEPTH_SIGMA_M),
+                        ("DEPTH_CLUSTER_TOLERANCE_M", DEPTH_CLUSTER_TOLERANCE_M)):
+        if not (math.isfinite(value) and value > 0.0):
+            problems.append(f"{name}={value!r} must be finite and > 0")
+    if not (math.isfinite(PERSON_DEPTH_RADIUS_M) and PERSON_DEPTH_RADIUS_M >= 0.0):
+        problems.append(f"PERSON_DEPTH_RADIUS_M={PERSON_DEPTH_RADIUS_M!r} must be finite and >= 0")
+    if not (0.0 < MIN_PERSON_DEPTH_SCORE <= 1.0):
+        problems.append(f"MIN_PERSON_DEPTH_SCORE={MIN_PERSON_DEPTH_SCORE!r} must be in (0, 1]")
+    if not (isinstance(MIN_CLUSTER_PIXELS, int) and MIN_CLUSTER_PIXELS >= 1):
+        problems.append(f"MIN_CLUSTER_PIXELS={MIN_CLUSTER_PIXELS!r} must be an int >= 1")
+    if not (isinstance(MIN_REFERENCE_JOINTS, int) and MIN_REFERENCE_JOINTS >= 1):
+        problems.append(f"MIN_REFERENCE_JOINTS={MIN_REFERENCE_JOINTS!r} must be an int >= 1")
+    if problems:
+        raise ValueError("Invalid depth sampling constants: " + "; ".join(problems))
+
+
+_validate_depth_sampling_config()
+
 # A person with no usable depth is reported as NaN, never as 0.0: zero is a
 # legal-looking distance and would silently be consumed as "right at the
 # camera". NaN forces every consumer to handle "unknown" explicitly.
@@ -424,6 +472,203 @@ def compute_joint_depths(
         xyzc[index, 0:3] = (point.x, point.y, point.z)
 
     return joint_z, xyzc.ravel()
+
+
+def _cluster_depths_1d(depths: np.ndarray, tolerance: float) -> Tuple[np.ndarray, int]:
+    """Greedy fixed-span 1D grouping (identical to the offline method D).
+
+    Sort the depths; open a cluster at the smallest unassigned value ``d0`` and
+    put every value with ``d - d0 <= tolerance`` (inclusive) into it; repeat.
+    Each cluster therefore spans at most ``tolerance``: neighbouring values can
+    never chain one cluster across a large depth range. Stable sort, so the
+    labelling is deterministic.
+    """
+    order = np.argsort(depths, kind="stable")
+    ordered = depths[order]
+    labels = np.empty(depths.shape[0], dtype=int)
+    count = start = 0
+    total = ordered.shape[0]
+    while start < total:
+        end = start
+        while end < total and ordered[end] - ordered[start] <= tolerance:
+            end += 1
+        labels[order[start:end]] = count
+        count += 1
+        start = end
+    return labels, count
+
+
+def person_reference_z(joint_z: Sequence[float]) -> float:
+    """``z_center`` of method D: median of the person's BASELINE joint Z.
+
+    ``joint_z`` must be the baseline snapshot from :func:`compute_joint_depths`
+    (finite only for joints that passed the confidence gate and had a valid 3x3
+    median), never method-D output, other persons or earlier frames. Returns
+    NaN when fewer than :data:`MIN_REFERENCE_JOINTS` joints are valid.
+    """
+    values = np.asarray(joint_z, dtype=np.float64).ravel()
+    values = values[np.isfinite(values) & (values > 0.0)]
+    if values.size < MIN_REFERENCE_JOINTS:
+        return NO_DEPTH
+    return float(np.median(values))
+
+
+def select_person_cluster_z(
+    depth_image: np.ndarray,
+    u: float,
+    v: float,
+    z_center: float,
+    params: DepthParams = DEFAULT_DEPTH_PARAMS,
+) -> float:
+    """Method D depth for one joint, or NaN when no cluster is credible.
+
+    Same pixel rules as the baseline (:func:`compute_joint_z`): centre pixel
+    ``round(u), round(v)``, patch clipped at the border, depth scaled to meters
+    first, zero/NaN/inf and the optional min/max bounds rejected. The patch is
+    :data:`DEPTH_PATCH_SIZE` wide (independent of the baseline ``window``).
+
+    Each cluster ``k`` (see :func:`_cluster_depths_1d`) is scored::
+
+        S_pixel  = sum of w_i in k / sum of w_i in the valid patch,
+                   w_i = exp(-|p_i - (u, v)|^2 / (2 DEPTH_PIXEL_SIGMA_PX^2))
+        e        = max(0, |median_k - z_center| - PERSON_DEPTH_RADIUS_M)
+        S_person = exp(-e^2 / (2 PERSON_DEPTH_SIGMA_M^2))   (1 inside the interval)
+        S        = S_pixel * S_person
+
+    Eligible: at least :data:`MIN_CLUSTER_PIXELS` pixels and
+    ``S_person >= MIN_PERSON_DEPTH_SCORE``. The highest ``S`` wins; exact ties
+    go to more pixels, then the smaller depth. No eligible cluster -> NaN: the
+    joint is reported missing (no baseline substitution, clamp or history).
+    """
+    height, width = depth_image.shape[:2]
+    if not (np.isfinite(u) and np.isfinite(v)):
+        return NO_DEPTH
+    column = int(round(float(u)))
+    row = int(round(float(v)))
+    if not (0 <= column < width and 0 <= row < height):
+        return NO_DEPTH
+
+    half = DEPTH_PATCH_SIZE // 2
+    row_start, row_end = max(0, row - half), min(height, row + half + 1)
+    column_start, column_end = max(0, column - half), min(width, column + half + 1)
+    patch = np.asarray(
+        depth_image[row_start:row_end, column_start:column_end], dtype=np.float64
+    ) * float(params.depth_scale)
+    valid = np.isfinite(patch) & (patch > 0.0)
+    if params.min_depth_m > 0.0:
+        valid &= patch >= float(params.min_depth_m)
+    if params.max_depth_m > 0.0:
+        valid &= patch <= float(params.max_depth_m)
+    if not valid.any():
+        return NO_DEPTH
+
+    rows, columns = np.mgrid[row_start:row_end, column_start:column_end]
+    depths = patch[valid]
+    weights = np.exp(
+        -((columns[valid] - float(u)) ** 2 + (rows[valid] - float(v)) ** 2)
+        / (2.0 * DEPTH_PIXEL_SIGMA_PX ** 2)
+    )
+    labels, count = _cluster_depths_1d(depths, DEPTH_CLUSTER_TOLERANCE_M)
+    total_weight = weights.sum()
+
+    best = None  # (score, pixels, depth)
+    for label in range(count):
+        members = labels == label
+        pixels = int(members.sum())
+        if pixels < MIN_CLUSTER_PIXELS:
+            continue
+        cluster_z = float(np.median(depths[members]))
+        excess = max(0.0, abs(cluster_z - z_center) - PERSON_DEPTH_RADIUS_M)
+        s_person = math.exp(-excess * excess / (2.0 * PERSON_DEPTH_SIGMA_M ** 2))
+        if s_person < MIN_PERSON_DEPTH_SCORE:
+            continue
+        score = float(weights[members].sum() / total_weight) * s_person
+        key = (-score, -pixels, cluster_z)
+        if best is None or key < best[0]:
+            best = (key, cluster_z)
+    return NO_DEPTH if best is None else best[1]
+
+
+def compute_person_cluster_joint_depths(
+    depth_image: Optional[np.ndarray],
+    keypoints_xy: Optional[Sequence],
+    keypoint_scores: Optional[Sequence],
+    intrinsics: Optional[CameraIntrinsics],
+    params: DepthParams = DEFAULT_DEPTH_PARAMS,
+    num_joints: int = 17,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Method D: person-depth-aware cluster scoring. Same outputs as
+    :func:`compute_joint_depths`.
+
+    1. Baseline snapshot: :func:`compute_joint_depths` (3x3 median), unchanged.
+    2. ``z_center`` = median of the snapshot's valid joint Z
+       (:func:`person_reference_z`), once per person per frame.
+       Two different failure behaviours:
+         * fewer than MIN_REFERENCE_JOINTS valid baseline joints -> the WHOLE
+           person falls back to the baseline snapshot;
+         * a single joint without an eligible cluster -> only that joint is
+           missing (NaN XYZ), even if its baseline value was valid.
+    3. Every joint passing the confidence gate is re-sampled with
+       :func:`select_person_cluster_z`, including joints whose baseline depth
+       was missing. References always come from the baseline snapshot, never
+       from joints already re-sampled here.
+    4. XYZ = pinhole deprojection of the ORIGINAL float (u, v) at the chosen Z;
+       ``c`` stays the RTMO confidence.
+    """
+    base_z, base_xyzc = compute_joint_depths(
+        depth_image, keypoints_xy, keypoint_scores, intrinsics, params, num_joints
+    )
+    if depth_image is None or keypoints_xy is None or intrinsics is None or not intrinsics.is_valid():
+        return base_z, base_xyzc
+    image = np.asarray(depth_image)
+    if image.ndim != 2 or image.size == 0:
+        return base_z, base_xyzc
+
+    z_center = person_reference_z(base_z)
+    if not is_valid_depth(z_center):
+        return base_z, base_xyzc  # whole-person fallback
+
+    points = np.asarray(keypoints_xy, dtype=np.float64).reshape(-1, 2)
+    xyzc = base_xyzc.reshape(num_joints, 4).copy()
+    scores = xyzc[:, 3]
+    joint_z = np.full(num_joints, np.nan, dtype=np.float64)
+    xyzc[:, 0:3] = np.nan
+    count = min(num_joints, points.shape[0])
+    threshold = np.float32(params.keypoint_score_threshold)
+    for index in range(count):
+        score = scores[index]
+        if not np.isfinite(score) or score < threshold:
+            continue
+        u, v = points[index, 0], points[index, 1]
+        z = select_person_cluster_z(image, u, v, z_center, params)
+        point = deproject_pixel_to_point(u, v, z, intrinsics)
+        if not point.is_valid():
+            continue
+        joint_z[index] = z
+        xyzc[index, 0:3] = (point.x, point.y, point.z)
+    return joint_z, xyzc.ravel()
+
+
+def compute_person_joint_depths(
+    depth_image: Optional[np.ndarray],
+    keypoints_xy: Optional[Sequence],
+    keypoint_scores: Optional[Sequence],
+    intrinsics: Optional[CameraIntrinsics],
+    params: DepthParams = DEFAULT_DEPTH_PARAMS,
+    method: str = DEPTH_SAMPLING_METHOD,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Per-person joint depth entry point used by the node.
+
+    ``"median"``: the unchanged baseline :func:`compute_joint_depths`.
+    ``"person_cluster"``: method D, :func:`compute_person_cluster_joint_depths`.
+    """
+    if method == "median":
+        return compute_joint_depths(depth_image, keypoints_xy, keypoint_scores, intrinsics, params)
+    if method == "person_cluster":
+        return compute_person_cluster_joint_depths(
+            depth_image, keypoints_xy, keypoint_scores, intrinsics, params
+        )
+    raise ValueError(f"unknown depth sampling method {method!r}")
 
 
 def person_z_from_joint_z(joint_z: Sequence[float]) -> float:

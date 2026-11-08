@@ -1,6 +1,6 @@
 """ROS 2 node running the skeleton pipeline in one process (V2.1).
 
-    frame -> RTMO -> BoT-SORT (optional) -> per-joint 3x3 depth (once)
+    frame -> RTMO -> BoT-SORT (optional) -> per-joint depth (once; depth_estimation.DEPTH_SAMPLING_METHOD)
           -> SkeletonFrame3D    on output_topic        (official)
           -> SkeletonFrame      on debug_output_topic  (legacy debug, optional)
           -> visualization image                        (optional, rate limited)
@@ -47,8 +47,9 @@ from .output.message_builder import (
 from .inference.depth_estimation import (
     NO_POSITION,
     CameraIntrinsics,
+    DEPTH_SAMPLING_METHOD,
     DepthParams,
-    compute_joint_depths,
+    compute_person_joint_depths,
     person_position_from_joint_z,
 )
 from .utils.pipeline_stats import PipelineStats
@@ -409,8 +410,8 @@ class RTMONode(Node):
             self.get_logger().debug(
                 "Depth ENABLED: z16 aligned to colour in RealSenseCapture, "
                 f"depth_scale={self.capture.depth_scale:.6f} m/unit; "
-                "person Z = median of per-joint 3x3 Z medians over "
-                "keypoints with score >= "
+                f"person Z = median of per-joint Z ({DEPTH_SAMPLING_METHOD}) "
+                "over keypoints with score >= "
                 f"{self.depth_params.keypoint_score_threshold:.2f}"
                 + (
                     f", clamped to [{self.depth_params.min_depth_m or 0:.2f}, "
@@ -510,7 +511,7 @@ class RTMONode(Node):
             f"Depth ENABLED: '{depth_msg.encoding}' already aligned to colour "
             f"by the external driver, depth_scale={depth_scale:.6f} m/unit "
             "(no rs.align in this process); person Z = median of per-joint "
-            "3x3 Z medians over keypoints with score >= "
+            f"Z ({DEPTH_SAMPLING_METHOD}) over keypoints with score >= "
             f"{self.depth_params.keypoint_score_threshold:.2f}"
         )
 
@@ -551,6 +552,7 @@ class RTMONode(Node):
             self.get_logger().error(f"Frame processing failed: {exc}")
 
     def _log_configuration(self) -> None:
+        self.get_logger().info(f"Joint depth sampling: {DEPTH_SAMPLING_METHOD}")
         output = f"Output: {self.output_topic} (SkeletonFrame3D)"
         if self.debug_frame_publisher is not None:
             output += f", debug {self.debug_output_topic} (SkeletonFrame)"
@@ -710,7 +712,10 @@ class RTMONode(Node):
         """
         packed: List[np.ndarray] = []
         for detection in detections:
-            joint_z, joints_xyzc = compute_joint_depths(
+            # DEPTH_SAMPLING_METHOD (depth_estimation.py): "person_cluster"
+            # (method D) or "median" (the original 3x3 baseline). The 3D frame,
+            # the legacy position and the overlay all use this one result.
+            joint_z, joints_xyzc = compute_person_joint_depths(
                 depth_image,
                 detection.keypoints_xy,
                 detection.keypoint_scores,

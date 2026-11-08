@@ -50,6 +50,6 @@ services:
       - ./docker/fastdds.xml:/config/fastdds.xml:ro
 
     environment:
-      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-60}
       RMW_IMPLEMENTATION: rmw_fastrtps_cpp
       FASTRTPS_DEFAULT_PROFILES_FILE: /config/fastdds.xml
