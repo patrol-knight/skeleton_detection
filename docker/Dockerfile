@@ -144,20 +144,13 @@ ENV RTMO_MODEL_CONFIG=/opt/models/rtmo/rtmo-m.py \
 COPY docker/verify_image.py /tmp/verify_image.py
 RUN python3 /tmp/verify_image.py && rm -f /tmp/verify_image.py
 
-# patrolknight_msgs (SkeletonFrame3D/PersonSkeleton3D and the legacy
-# SkeletonFrame/PersonSkeleton) is owned upstream in its own repo. It is
-# fetched and built HERE, at image build time, into its own install space
-# /opt/patrolknight_msgs -- never at container start-up.
-# PATROLKNIGHT_MSGS_REF is pinned to the upstream commit that added the 3D
-# types: a SHA keeps builds reproducible and changing it invalidates this
-# layer's cache, while a branch name would keep reusing whatever an earlier
-# build cached.
-ARG PATROLKNIGHT_MSGS_REF=d5c82cc7f68048f04626c866c309055f2e25b92d
-RUN git init -q /tmp/patrolknight_ws/src/patrolknight_msgs \
-    && cd /tmp/patrolknight_ws/src/patrolknight_msgs \
-    && git fetch -q --depth 1 \
-        https://github.com/patrol-knight/patrolknight_msgs.git ${PATROLKNIGHT_MSGS_REF} \
-    && git checkout -q FETCH_HEAD \
+# patrolknight_msgs (SkeletonFrame/PersonSkeleton) is owned upstream in its
+# own repo. It is cloned and built HERE, at image build time, into its own
+# install space /opt/patrolknight_msgs -- never at container start-up.
+# Override PATROLKNIGHT_MSGS_REF to pin a tag or branch.
+ARG PATROLKNIGHT_MSGS_REF=main
+RUN git clone --depth 1 --branch ${PATROLKNIGHT_MSGS_REF} \
+        https://github.com/patrol-knight/patrolknight_msgs.git /tmp/patrolknight_ws/src/patrolknight_msgs \
     && . /opt/ros/humble/setup.sh \
     && cd /tmp/patrolknight_ws \
     && colcon build --merge-install --install-base /opt/patrolknight_msgs --cmake-args -DCMAKE_BUILD_TYPE=Release \

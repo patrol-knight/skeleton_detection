@@ -9,7 +9,7 @@ camera optical frame, built from the same single RTMO/tracking pass as V2.0.
 | Executable / node name | `iot_node` / `rtmo_node` |
 | Official output | `patrolknight_msgs/msg/SkeletonFrame3D` on `/skeleton_detection/frame` |
 | Also published | legacy V2.0 `SkeletonFrame` on `/skeleton_detection/debug_frame`; 2D overlay on `/skeleton_detection/visualization_image` |
-| Requires | `patrolknight_msgs` with `SkeletonFrame3D` / `PersonSkeleton3D`: upstream commit `d5c82cc`, fetched by the image build ([section 7](#7-build-and-launch)) |
+| Requires | `patrolknight_msgs` with `SkeletonFrame3D` / `PersonSkeleton3D` (upstream `main` since commit `d5c82cc`), cloned from `main` by the image build ([section 7](#7-build-and-launch)) |
 | Launch | `docker compose up` from the repository root, camera started through the IoT stack |
 
 ## Contents
@@ -41,8 +41,7 @@ camera optical frame, built from the same single RTMO/tracking pass as V2.0.
 | Gate comparison | score as float64 vs threshold as float64 | both in float32, so a score equal to the threshold passes |
 | Untracked (`-1`) detections | published | omitted from the official message; still in the debug message |
 | Deployment YAML | node default threshold | `depth_keypoint_score_threshold: 0.30` set explicitly; debug topic keys listed |
-| Standalone compose | external `iot_ros-net` network, image `skeleton_humble_dev` | host network + host IPC (Fast DDS default transports, shared memory with the IoT containers); image `skeleton_humble_dev`, always built from the checkout (`pull_policy: build`) |
-| Docker build | clones `patrolknight_msgs` `main` | fetches the pinned upstream commit `d5c82cc` |
+| Standalone compose | external `iot_ros-net` network, image `skeleton_humble_dev` | host network + host IPC (Fast DDS default transports, shared memory with the IoT containers); image `skeleton_humble_dev` |
 
 Code changes are confined to `inference/depth_estimation.py`
 (`compute_joint_depths`, `person_z_from_joint_z`,
@@ -473,9 +472,8 @@ config is bind-mounted; edit it and restart the container to apply.
 
 | `compose.yaml` setting | Value | Why |
 |---|---|---|
-| `build` | context `.`, `docker/Dockerfile` | the image always comes from this checkout |
-| `image` | `skeleton_humble_dev` | same tag as V2.0; `pull_policy: build` keeps it in step with this checkout |
-| `pull_policy` | `build` | every `up` runs the (cached) build, so a pulled code change cannot silently run an old image |
+| `build` | context `.`, `docker/Dockerfile` | the image is built from this checkout; builds are triggered manually (`docker compose build`) |
+| `image` | `skeleton_humble_dev` | same tag as V2.0 |
 | `network_mode`, `ipc` | `host`, `host` | same DDS graph and shared memory as the IoT containers: Fast DDS's default transports (shared memory + UDPv4, default RMW `rmw_fastrtps_cpp`) then carry the RGBD over shared memory. No DDS profile is mounted |
 | `ROS_DOMAIN_ID` | `${ROS_DOMAIN_ID:-0}` | read from the shell like the IoT stack, so both get the same value (Spark 60, Nano 61) |
 
@@ -487,13 +485,12 @@ so the image must contain the V2.1 message types. They are merged upstream:
 msg/PersonSkeleton3D.msg and msg/SkeletonFrame3D.msg", an ancestor of `main`). Its
 definitions are identical to the ones V2.1 was developed and tested against.
 
-The Dockerfile fetches exactly that commit
-(`ARG PATROLKNIGHT_MSGS_REF=d5c82cc7f68048f04626c866c309055f2e25b92d`) from
-the public HTTPS URL; no GitHub credentials are needed. A SHA is used instead
-of `main` because Docker caches the fetch layer by its instruction text: with
-a branch name, a machine that built before the merge would keep reusing the
-old, legacy-only messages. To move to newer messages, bump the SHA (or pass
-`--build-arg PATROLKNIGHT_MSGS_REF=<sha|branch|tag>`).
+The Dockerfile clones `main` (`ARG PATROLKNIGHT_MSGS_REF=main`) from the
+public HTTPS URL; no GitHub credentials are needed. Docker caches the clone
+layer by its instruction text, so a machine whose cache predates `d5c82cc`
+keeps reusing the old, legacy-only messages: rebuild that layer with
+`docker compose build --no-cache`. To build against another branch or tag,
+pass `--build-arg PATROLKNIGHT_MSGS_REF=<branch|tag>`.
 
 Verify the installed type:
 
@@ -520,7 +517,7 @@ Run exactly one skeleton service.
 | Situation | Result | Do |
 |---|---|---|
 | IoT `skeleton` and standalone `skeleton_humble` both up | two publishers on `/skeleton_detection/frame` with **different types** | stop one: `docker compose -f docker/docker-compose.yml --project-directory . stop skeleton` (IoT repo), or start the stack with `./launch.sh up skeleton:=false` |
-| A hand-built `skeleton_humble_dev` (e.g. V2.0) | replaced: `pull_policy: build` rebuilds the tag from this checkout on every `docker compose up` | build other variants under a different tag and run them only with `docker run`, never under the `skeleton_humble` name while the service is up |
+| A hand-built `skeleton_humble_dev` (e.g. V2.0) | used as is: `docker compose up` runs whatever image carries the tag and does not rebuild it | run `docker compose build` after changing the checkout; build other variants under a different tag and run them only with `docker run`, never under the `skeleton_humble` name while the service is up |
 | `zenoh_bridge` running next to V2.1 | bridge subscribes the legacy type on the same topic and gets nothing | expected until the bridge is updated ([section 6](#6-coordinate-frames-ros-output-vs-bridge-json)) |
 
 Check what is running and who publishes:
@@ -674,10 +671,10 @@ still apply. V2.1-specific symptoms:
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `ImportError: cannot import name 'SkeletonFrame3D'` at start-up | image built from messages without the V2.1 types (an old `main` cached by a branch-name build, or a hand-built tag) | `docker compose up` with the pinned SHA rebuilds correctly; check with `ros2 interface show` |
-| Build fails at the `patrolknight_msgs` `git fetch` | no network to GitHub, or `PATROLKNIGHT_MSGS_REF` names a commit/branch that does not exist | restore network; use a full 40-character SHA, a branch or a tag |
+| `ImportError: cannot import name 'SkeletonFrame3D'` at start-up | image built from messages without the V2.1 types (a `main` clone cached from before `d5c82cc`, or a hand-built tag) | `docker compose build --no-cache`, then check with `ros2 interface show` |
+| Build fails at the `patrolknight_msgs` `git clone` | no network to GitHub, or `PATROLKNIGHT_MSGS_REF` names a branch/tag that does not exist | restore network; use an existing branch or tag |
 | Build fails downloading checkpoints or packages | first build needs network access | rerun when online; later builds are cached |
-| `docker compose up` prints a build every time | `pull_policy: build`; unchanged layers come from cache | expected; use `docker compose up --no-build` only if you know the image is current |
+| Code change not visible after `docker compose up` | the image is not rebuilt automatically | `docker compose build`, then `docker compose up` |
 | `Conflict. The container name "/skeleton_humble" is already in use` | a container of that name from an older image or `docker run` | `docker rm -f skeleton_humble`, then `docker compose up` |
 | `CUDA is not available inside this container` | NVIDIA Container Toolkit missing or not configured | install/configure it; the service reserves all GPUs |
 | Log stops after `Output: ...`, no `First RGBD frame` | camera not started, wrong `ROS_DOMAIN_ID`, or the RGBD topic is not reaching this container | start the camera via the IoT stack; same `ROS_DOMAIN_ID` in both shells; `ros2 topic hz /camera/camera/rgbd` inside the container |
@@ -694,8 +691,10 @@ still apply. V2.1-specific symptoms:
 
 ## 11. Known limits and open items
 
-- **Message pin.** The image fetches `patrolknight_msgs` at `d5c82cc`; later
-  message changes need the SHA bumped in `docker/Dockerfile`.
+- **Messages track `main`.** The image clones `patrolknight_msgs` `main`, so an
+  upstream message change alters the output contract on the next uncached
+  rebuild, while a cached clone layer keeps older messages until
+  `docker compose build --no-cache`.
 - **IoT stack still on V2.0.** The submodule pin, `iot/config/skeleton_detection.yaml`
   and the bridge all target the legacy message on `/skeleton_detection/frame`.
 - **No V2.1 map-frame JSON** in any checked-out bridge source.

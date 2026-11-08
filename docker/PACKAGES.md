@@ -63,7 +63,7 @@ image (e.g. to `ros:humble-ros-core`) is known to need them added.
 | `ros-humble-builtin-interfaces` | `builtin_interfaces/Time` — tests only |
 | `ros-humble-ament-cmake`, `ros-humble-rosidl-default-generators` | **build-time**, to build `patrolknight_msgs` (an `ament_cmake` interface package) |
 | `ros-humble-rmw-fastrtps-cpp` | the default RMW; nothing in this package selects another (see [Not dependencies](#not-dependencies)) |
-| `git` | **build-time**, `git fetch` of `patrolknight_msgs` |
+| `git` | **build-time**, `git clone` of `patrolknight_msgs` |
 | `cmake`, `python3-colcon-common-extensions` | **build-time**, `colcon build` of `patrolknight_msgs` and this package |
 | `python3-pytest` (6.2.5) | `<test_depend>` in `package.xml`; running `test/` |
 
@@ -126,11 +126,9 @@ It is **not** an apt package; it lives in its own repository and is built from
 source at image build time into its own install space:
 
 ```bash
-git init -q /tmp/patrolknight_ws/src/patrolknight_msgs
-cd /tmp/patrolknight_ws/src/patrolknight_msgs
-git fetch -q --depth 1 \
-    https://github.com/patrol-knight/patrolknight_msgs.git ${PATROLKNIGHT_MSGS_REF}
-git checkout -q FETCH_HEAD
+git clone --depth 1 --branch ${PATROLKNIGHT_MSGS_REF} \
+    https://github.com/patrol-knight/patrolknight_msgs.git \
+    /tmp/patrolknight_ws/src/patrolknight_msgs
 . /opt/ros/humble/setup.sh
 cd /tmp/patrolknight_ws
 colcon build --merge-install --install-base /opt/patrolknight_msgs \
@@ -140,7 +138,7 @@ colcon build --merge-install --install-base /opt/patrolknight_msgs \
 | | |
 |---|---|
 | Source | `github.com/patrol-knight/patrolknight_msgs` |
-| Version | build arg `PATROLKNIGHT_MSGS_REF`, **pinned** to commit `d5c82cc7f68048f04626c866c309055f2e25b92d` (adds the V2.1 types); a branch or tag also works but is cached by name |
+| Version | build arg `PATROLKNIGHT_MSGS_REF`, default **`main`** — *(unpinned)*: whatever `main` points to at build time |
 | Its own deps | `ament_cmake`, `rosidl_default_generators` (build), `geometry_msgs`, `std_msgs`, `rosidl_default_runtime` — all in the base image |
 | Install space | `/opt/patrolknight_msgs`, sourced by the `ENTRYPOINT` and `.bashrc` |
 
@@ -609,9 +607,9 @@ The hard edges, in priority order:
 7. **torch/torchvision must stay a matched `+cu130` aarch64 pair**, or the
    CUDA 13 / GB10 build is invalidated.
 8. **`pyrealsense2` needs an aarch64 cp310 wheel**, or it builds from source.
-9. **`patrolknight_msgs` is pinned by commit SHA** (`PATROLKNIGHT_MSGS_REF`).
-   An upstream message change reaches the image only when the SHA is bumped
-   here; with a branch name, Docker's layer cache would keep an old fetch.
+9. **`patrolknight_msgs` tracks `main`** unless `PATROLKNIGHT_MSGS_REF` is set.
+   A message-definition change upstream changes the node's output contract on
+   the next rebuild without any change in this repository.
 
 [`verify_image.py`](verify_image.py) enforces 1, 2, 4, 5, 7 and the asset
 layout at **build time**, so a bad resolution fails `docker build` instead of

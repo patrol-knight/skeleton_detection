@@ -3,10 +3,7 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile
-    # Always build from this checkout (cached layers make repeat runs quick),
-    # so `docker compose up` never runs a stale or unrelated local image.
     image: skeleton_humble_dev
-    pull_policy: build
 
     container_name: skeleton_humble
 

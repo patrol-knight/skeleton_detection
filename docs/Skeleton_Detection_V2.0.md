@@ -641,8 +641,7 @@ The build:
   checkpoints and checks the RTMO config loads with its `_base_` chain;
 - runs `docker/verify_image.py`, which fails the build if a pinned version,
   import chain or baked asset is missing or displaced;
-- clones `patrolknight_msgs` (`PATROLKNIGHT_MSGS_REF`, default `main` in V2.0;
-  V2.1 pins a commit) and
+- clones `patrolknight_msgs` (`PATROLKNIGHT_MSGS_REF`, default `main`) and
   builds it into `/opt/patrolknight_msgs`;
 - builds this `ament_python` package into `/opt/skeleton_detection`;
 - sets an `ENTRYPOINT` that sources `/opt/ros/humble`, `/opt/patrolknight_msgs`
