@@ -5,7 +5,7 @@ services:
       dockerfile: docker/Dockerfile
     # Always build from this checkout (cached layers make repeat runs quick),
     # so `docker compose up` never runs a stale or unrelated local image.
-    image: skeleton_detection:v2.1
+    image: skeleton_humble_dev
     pull_policy: build
 
     container_name: skeleton_humble
@@ -28,9 +28,8 @@ services:
     # block below, not from privileged mode. Direct `input_mode: realsense`
     # needs extra device access -- see docs/Skeleton_Detection_V2.0.md.
 
-    # Same DDS setup as the IoT containers: host network + host IPC, and a
-    # Fast DDS profile with explicit shared-memory + UDP transports
-    # (docker/fastdds.xml). With Fast DDS defaults the RGBD messages do not arrive.
+    # Same DDS graph as the IoT containers: host network + host IPC, so Fast DDS
+    # (default transports) can use shared memory with them.
     network_mode: host
     ipc: host
 
@@ -47,9 +46,6 @@ services:
     # swapped without rebuilding the image.
     volumes:
       - ./config/skeleton_detection_node.yaml:/config/skeleton_detection_node.yaml:ro
-      - ./docker/fastdds.xml:/config/fastdds.xml:ro
 
     environment:
-      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-60}
-      RMW_IMPLEMENTATION: rmw_fastrtps_cpp
-      FASTRTPS_DEFAULT_PROFILES_FILE: /config/fastdds.xml
+      ROS_DOMAIN_ID: ${ROS_DOMAIN_ID:-0}

@@ -126,10 +126,11 @@ It is **not** an apt package; it lives in its own repository and is built from
 source at image build time into its own install space:
 
 ```bash
-git init -q /src && cd /src
+git init -q /tmp/patrolknight_ws/src/patrolknight_msgs
+cd /tmp/patrolknight_ws/src/patrolknight_msgs
 git fetch -q --depth 1 \
     https://github.com/patrol-knight/patrolknight_msgs.git ${PATROLKNIGHT_MSGS_REF}
-git checkout -q FETCH_HEAD    # copied to /tmp/patrolknight_ws/src/patrolknight_msgs
+git checkout -q FETCH_HEAD
 . /opt/ros/humble/setup.sh
 cd /tmp/patrolknight_ws
 colcon build --merge-install --install-base /opt/patrolknight_msgs \

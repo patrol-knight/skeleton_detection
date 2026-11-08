@@ -41,8 +41,8 @@ camera optical frame, built from the same single RTMO/tracking pass as V2.0.
 | Gate comparison | score as float64 vs threshold as float64 | both in float32, so a score equal to the threshold passes |
 | Untracked (`-1`) detections | published | omitted from the official message; still in the debug message |
 | Deployment YAML | node default threshold | `depth_keypoint_score_threshold: 0.30` set explicitly; debug topic keys listed |
-| Standalone compose | external `iot_ros-net` network, image `skeleton_humble_dev` | host network + host IPC, Fast DDS 64 MiB SHM profile; image `skeleton_detection:v2.1`, always built from the checkout (`pull_policy: build`) |
-| Docker build | clones `patrolknight_msgs` `main` | fetches the pinned upstream commit `d5c82cc`; the stage can be replaced with a local checkout |
+| Standalone compose | external `iot_ros-net` network, image `skeleton_humble_dev` | host network + host IPC (Fast DDS default transports, shared memory with the IoT containers); image `skeleton_humble_dev`, always built from the checkout (`pull_policy: build`) |
+| Docker build | clones `patrolknight_msgs` `main` | fetches the pinned upstream commit `d5c82cc` |
 
 Code changes are confined to `inference/depth_estimation.py`
 (`compute_joint_depths`, `person_z_from_joint_z`,
@@ -311,7 +311,7 @@ a reliable-QoS subscriber does not receive the default best-effort stream.
 
 ## 4. Message schema and decoding
 
-Definitions as installed in `skeleton_detection:v2.1` (checked with
+Definitions as installed in `skeleton_humble_dev` (checked with
 `ros2 interface show`):
 
 ```text
@@ -474,22 +474,20 @@ config is bind-mounted; edit it and restart the container to apply.
 | `compose.yaml` setting | Value | Why |
 |---|---|---|
 | `build` | context `.`, `docker/Dockerfile` | the image always comes from this checkout |
-| `image` | `skeleton_detection:v2.1` | a V2.1-specific tag; older local tags such as `skeleton_humble_dev` are never used |
+| `image` | `skeleton_humble_dev` | same tag as V2.0; `pull_policy: build` keeps it in step with this checkout |
 | `pull_policy` | `build` | every `up` runs the (cached) build, so a pulled code change cannot silently run an old image |
-| `network_mode`, `ipc` | `host`, `host` | same DDS graph and shared memory as the IoT containers |
-| `RMW_IMPLEMENTATION` | `rmw_fastrtps_cpp` | match the IoT containers |
-| `FASTRTPS_DEFAULT_PROFILES_FILE` | `/config/fastdds.xml` (mounted `docker/fastdds.xml`) | SHM transport with 64 MiB segments + UDPv4, builtin transports off; identical to `iot/config/dds/fastdds.xml`. A multi-MB RGBD message does not fit Fast DDS's default segment and, best-effort, never arrives |
-| `ROS_DOMAIN_ID` | `${ROS_DOMAIN_ID:-0}` | read from the shell; use the same value as the IoT stack |
+| `network_mode`, `ipc` | `host`, `host` | same DDS graph and shared memory as the IoT containers: Fast DDS's default transports (shared memory + UDPv4, default RMW `rmw_fastrtps_cpp`) then carry the RGBD over shared memory. No DDS profile is mounted |
+| `ROS_DOMAIN_ID` | `${ROS_DOMAIN_ID:-0}` | read from the shell like the IoT stack, so both get the same value (Spark 60, Nano 61) |
 
 ### Messages: `patrolknight_msgs`
 
 `iot_node.py` imports `SkeletonFrame` and `SkeletonFrame3D` at module load,
 so the image must contain the V2.1 message types. They are merged upstream:
 `patrol-knight/patrolknight_msgs` commit `d5c82cc` ("add
-msg/PersonSkeleton3D.msg and msg/SkeletonFrame3D.msg", current `main`). Its
+msg/PersonSkeleton3D.msg and msg/SkeletonFrame3D.msg", an ancestor of `main`). Its
 definitions are identical to the ones V2.1 was developed and tested against.
 
-The first Dockerfile stage fetches exactly that commit
+The Dockerfile fetches exactly that commit
 (`ARG PATROLKNIGHT_MSGS_REF=d5c82cc7f68048f04626c866c309055f2e25b92d`) from
 the public HTTPS URL; no GitHub credentials are needed. A SHA is used instead
 of `main` because Docker caches the fetch layer by its instruction text: with
@@ -497,19 +495,10 @@ a branch name, a machine that built before the merge would keep reusing the
 old, legacy-only messages. To move to newer messages, bump the SHA (or pass
 `--build-arg PATROLKNIGHT_MSGS_REF=<sha|branch|tag>`).
 
-To test unmerged message changes from a local checkout, replace the stage
-with a named build context and use a separate tag:
-
-```bash
-docker build -f docker/Dockerfile \
-  --build-context patrolknight_msgs=../patrolknight_msgs \
-  -t skeleton_detection:msgs-local .
-```
-
 Verify the installed type:
 
 ```bash
-docker run --rm skeleton_detection:v2.1 \
+docker run --rm skeleton_humble_dev \
   ros2 interface show patrolknight_msgs/msg/PersonSkeleton3D
 # expect: int32 person_id / float32 score / float32[68] joints_xyzc / int32[] connections
 ```
@@ -531,7 +520,7 @@ Run exactly one skeleton service.
 | Situation | Result | Do |
 |---|---|---|
 | IoT `skeleton` and standalone `skeleton_humble` both up | two publishers on `/skeleton_detection/frame` with **different types** | stop one: `docker compose -f docker/docker-compose.yml --project-directory . stop skeleton` (IoT repo), or start the stack with `./launch.sh up skeleton:=false` |
-| An older image (`skeleton_humble_dev`, a hand-built tag) | not used: Compose builds and runs `skeleton_detection:v2.1` | run other tags only with `docker run`, never under the `skeleton_humble` name while the service is up |
+| A hand-built `skeleton_humble_dev` (e.g. V2.0) | replaced: `pull_policy: build` rebuilds the tag from this checkout on every `docker compose up` | build other variants under a different tag and run them only with `docker run`, never under the `skeleton_humble` name while the service is up |
 | `zenoh_bridge` running next to V2.1 | bridge subscribes the legacy type on the same topic and gets nothing | expected until the bridge is updated ([section 6](#6-coordinate-frames-ros-output-vs-bridge-json)) |
 
 Check what is running and who publishes:
@@ -575,7 +564,7 @@ Not ROS parameters: the 3 × 3 window (`DepthParams.window`), the depth scale
 No camera or GPU needed:
 
 ```bash
-docker run --rm -v "$PWD":/src:ro -w /src skeleton_detection:v2.1 \
+docker run --rm -v "$PWD":/src:ro -w /src skeleton_humble_dev \
   python3 -m pytest -p no:anyio -p no:cacheprovider -q test/
 ```
 
@@ -686,7 +675,7 @@ still apply. V2.1-specific symptoms:
 | Symptom | Cause | Fix |
 |---|---|---|
 | `ImportError: cannot import name 'SkeletonFrame3D'` at start-up | image built from messages without the V2.1 types (an old `main` cached by a branch-name build, or a hand-built tag) | `docker compose up` with the pinned SHA rebuilds correctly; check with `ros2 interface show` |
-| Build fails in the `patrolknight_msgs_git` stage (`git fetch`) | no network to GitHub, or `PATROLKNIGHT_MSGS_REF` names a commit/branch that does not exist | restore network; use a full 40-character SHA, a branch or a tag |
+| Build fails at the `patrolknight_msgs` `git fetch` | no network to GitHub, or `PATROLKNIGHT_MSGS_REF` names a commit/branch that does not exist | restore network; use a full 40-character SHA, a branch or a tag |
 | Build fails downloading checkpoints or packages | first build needs network access | rerun when online; later builds are cached |
 | `docker compose up` prints a build every time | `pull_policy: build`; unchanged layers come from cache | expected; use `docker compose up --no-build` only if you know the image is current |
 | `Conflict. The container name "/skeleton_humble" is already in use` | a container of that name from an older image or `docker run` | `docker rm -f skeleton_humble`, then `docker compose up` |
@@ -697,7 +686,7 @@ still apply. V2.1-specific symptoms:
 | A joint's Z jumps to the background | patch mostly off the body (thin limbs, edges) | expected limitation of a 3 × 3 median; filter downstream by confidence and temporal consistency |
 | Two publishers / two types on `/skeleton_detection/frame` | IoT `skeleton` (V2.0) and standalone V2.1 both running | [section 7](#avoiding-the-wrong-image-and-duplicate-publishers) |
 | Bridge publishes no skeleton JSON | bridge expects the legacy type on this topic | [section 6](#6-coordinate-frames-ros-output-vs-bridge-json) |
-| RGBD topic listed but `First RGBD frame` never logged | SHM profile not loaded | check `FASTRTPS_DEFAULT_PROFILES_FILE` is readable (a parse error prints `XMLPARSER Error`) and `ipc: host` |
+| RGBD topic listed but `First RGBD frame` never logged | no shared memory with the adapter (missing `network_mode: host` / `ipc: host`, or this container started under a different network/IP state than the IoT containers), so the multi-MB frames go over UDP and are lost | check both settings; after a Wi-Fi/IP change restart the IoT DDS containers and this one together |
 | `ros2 topic info` inside `skeleton_humble` fails with `unknown tag 'rclpy.type_hash.TypeHash'` | a Jazzy-started ros2 daemon (ZED container) on the shared host network | add `--no-daemon`; `sequence size exceeds remaining buffer` lines are harmless Humble/Jazzy discovery noise |
 | `First RGBD frame: 848x480` expected but `854x480` logged | ZED publishes 854 × 480 at the current `pub_downscale_factor` | expected |
 

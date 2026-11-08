@@ -1,21 +1,3 @@
-# patrolknight_msgs source: the upstream repo at PATROLKNIGHT_MSGS_REF, a
-# commit SHA (or branch/tag). The default is the upstream main commit that
-# added SkeletonFrame3D/PersonSkeleton3D. Pinning a SHA keeps builds
-# reproducible, and changing it invalidates this layer's cache; a branch name
-# would keep reusing whatever an earlier build cached. A local checkout
-# replaces this whole stage with
-#   docker build --build-context patrolknight_msgs=../patrolknight_msgs ...
-FROM ros:humble-ros-base AS patrolknight_msgs_git
-ARG PATROLKNIGHT_MSGS_REF=d5c82cc7f68048f04626c866c309055f2e25b92d
-RUN git init -q /src && cd /src \
-    && git fetch -q --depth 1 \
-        https://github.com/patrol-knight/patrolknight_msgs.git ${PATROLKNIGHT_MSGS_REF} \
-    && git checkout -q FETCH_HEAD \
-    && rm -rf .git
-
-FROM scratch AS patrolknight_msgs
-COPY --from=patrolknight_msgs_git /src/ /
-
 FROM ros:humble-ros-base
 
 ARG DEBIAN_FRONTEND=noninteractive
@@ -164,12 +146,19 @@ RUN python3 /tmp/verify_image.py && rm -f /tmp/verify_image.py
 
 # patrolknight_msgs (SkeletonFrame3D/PersonSkeleton3D and the legacy
 # SkeletonFrame/PersonSkeleton) is owned upstream in its own repo. It is
-# built HERE, at image build time, into its own install space
-# /opt/patrolknight_msgs -- never at container start-up. The source comes
-# from the patrolknight_msgs stage above (PATROLKNIGHT_MSGS_REF, or a local
-# checkout via --build-context).
-COPY --from=patrolknight_msgs / /tmp/patrolknight_ws/src/patrolknight_msgs/
-RUN . /opt/ros/humble/setup.sh \
+# fetched and built HERE, at image build time, into its own install space
+# /opt/patrolknight_msgs -- never at container start-up.
+# PATROLKNIGHT_MSGS_REF is pinned to the upstream commit that added the 3D
+# types: a SHA keeps builds reproducible and changing it invalidates this
+# layer's cache, while a branch name would keep reusing whatever an earlier
+# build cached.
+ARG PATROLKNIGHT_MSGS_REF=d5c82cc7f68048f04626c866c309055f2e25b92d
+RUN git init -q /tmp/patrolknight_ws/src/patrolknight_msgs \
+    && cd /tmp/patrolknight_ws/src/patrolknight_msgs \
+    && git fetch -q --depth 1 \
+        https://github.com/patrol-knight/patrolknight_msgs.git ${PATROLKNIGHT_MSGS_REF} \
+    && git checkout -q FETCH_HEAD \
+    && . /opt/ros/humble/setup.sh \
     && cd /tmp/patrolknight_ws \
     && colcon build --merge-install --install-base /opt/patrolknight_msgs --cmake-args -DCMAKE_BUILD_TYPE=Release \
     && rm -rf /tmp/patrolknight_ws
