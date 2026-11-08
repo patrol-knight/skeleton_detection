@@ -1,173 +1,96 @@
-# Skeleton Detection — IoT perception subsystem
+# Skeleton Detection
 
-Real-time multi-person skeleton detection, tracking and 3D localization on an
-NVIDIA DGX Spark, using an Intel RealSense D456, RTMO-M, ROS 2 Humble and
-BoT-SORT + OSNet ReID.
+ROS 2 Humble node (`iot_node`, node name `rtmo_node`) for real-time
+multi-person skeletons on an NVIDIA DGX Spark. It runs RTMO-M 2D pose,
+BoT-SORT + OSNet ReID tracking, and computes per-joint 3D positions from an
+aligned RGB-D stream.
 
-## Project overview
-
-This is the IoT / skeleton-detection subsystem. One ROS 2 node
-(executable `iot_node`, node name `rtmo_node`) runs the whole perception path
-in a single Python process and does the following:
-
-- **RealSense RGB/depth capture** — the D456 is opened in-process with
-  `pyrealsense2`; depth is aligned to colour in the capture thread. An
-  external `realsense2_camera` driver can be consumed instead, over a single
-  RGBD topic — see [Input modes](#input-modes).
-- **RTMO skeleton detection** — RTMO-M multi-person 2D pose, COCO-17 keypoints,
-  per-person bounding boxes and confidence scores.
-- **BoT-SORT person tracking** — persistent track IDs from motion/IoU plus
-  optional OSNet appearance ReID.
-- **Optional occlusion-aware tracking** — an extension of that tracking path
-  that protects a track's Kalman and ReID state while a person is occluded.
-- **Depth estimation** — a robust per-person Z from the aligned depth image.
-- **XYZ localization** — the person's 3D position in meters in the camera
-  colour **optical** frame.
-- **ROS 2 publication** — a custom robot-facing `SkeletonFrame` message.
-- **Visualization** — a separate human-facing annotated image topic, and
-  optional annotated files on disk.
-
-The live path is deliberately kept inside **one node / one process** so the
-high-bandwidth RealSense RGB stream never has to cross DDS before inference or
-tracking. DDS starts only at the outputs.
-
-## Input modes
-
-`input_mode` selects the frame source. All three converge on the same
-RTMO → tracking → depth → `SkeletonFrame` pipeline; nothing downstream changes.
-
-| `input_mode` | Frames from | Depth / XYZ | Typical use |
-|---|---|---|---|
-| `realsense` | the D456, opened **in this process** with `pyrealsense2` | yes, aligned in-process | optional direct camera mode (`config/rtmo_node_direct_realsense.yaml`) |
-| `ros_topic` | a colour-only `sensor_msgs/Image` topic | no — `NaN` | offline / dummy-publisher testing |
-| `ros_camera` (default) | one `realsense2_camera_msgs/msg/RGBD` topic from an **externally running** driver | yes, aligned **by the driver** | the camera is owned by another container (`config/skeleton_detection_node.yaml`) |
-
-In `ros_camera` mode the **external driver** is responsible for enabling
-colour, enabling depth, RGB/depth synchronization, depth-to-colour alignment
-and publishing the RGBD topic. Skeleton Detection only consumes the resulting
-message — it never launches `realsense2_camera`, opens no camera and calls no
-`rs.align`. The driver is expected to run with `enable_rgbd:=true`,
-`enable_sync:=true`, `align_depth.enable:=true`, `enable_color:=true`,
-`enable_depth:=true`.
-
-```bash
-# default: config/skeleton_detection_node.yaml (input_mode: ros_camera)
-ros2 launch skeleton_detection skeleton_detection_bringup.launch.py
-
-# open the D456 in this process instead: the mode is chosen by the config
-# file, not a launch argument
-ros2 launch skeleton_detection skeleton_detection_bringup.launch.py \
-  config:=/opt/skeleton_detection/share/skeleton_detection/config/rtmo_node_direct_realsense.yaml
-```
-
-Details in [Input modes](docs/running.md#3-input-modes).
+| Topic | Type | Role |
+|---|---|---|
+| `/skeleton_detection/frame` | `patrolknight_msgs/SkeletonFrame3D` | official: tracked persons, 17 joints × `[X, Y, Z, conf]` in the camera optical frame |
+| `/skeleton_detection/debug_frame` | `patrolknight_msgs/SkeletonFrame` | legacy V2.0 message (UV joints, bbox, person position) |
+| `/skeleton_detection/visualization_image` | `sensor_msgs/Image` | 2D overlay |
 
 ## Pipeline
 
 ```mermaid
-flowchart TD
-    RS["RealSense D456<br/>848x480 @ 60 fps"]
-    CAP["input/realsense_capture.py<br/>capture thread, rs.align to colour<br/>latest-frame-wins buffer"]
-    RTMO["inference/rtmo_inference.py<br/>RTMO-M"]
-    DET["PersonDetection<br/>bbox xyxy + score + COCO-17 keypoints"]
-    TRK["inference/person_tracking.py<br/>BoT-SORT: Kalman + IoU + OSNet ReID"]
-    OCC["inference/occlusion_tracking.py<br/>OPTIONAL occlusion-aware extension"]
-    IDS["track_id becomes person_id<br/>persistent across frames"]
-    DEPTH["inference/depth_estimation.py<br/>two-stage median Z<br/>bbox-centre deprojection to XYZ"]
-    MSG["output/message_builder.py<br/>SkeletonFrame"]
-    TOPIC["/skeleton_detection/frame<br/>robot-facing"]
-    VIZ["output/visualization.py<br/>rate limited, downscaled"]
-    VTOPIC["/skeleton_detection/visualization_image<br/>human-facing"]
-    STATS["utils/pipeline_stats.py<br/>FPS + latency"]
+flowchart LR
+    IN["RGB-D frame<br/>colour + aligned depth<br/>+ CameraInfo"]
+    RTMO["RTMO-M<br/>17 COCO joints<br/>(u, v, c) + bbox + score"]
+    FLT["Person filter<br/>score >= 0.3"]
+    TRK["BoT-SORT + OSNet ReID<br/>persistent person_id"]
+    GATE["Joint gate<br/>c >= 0.30"]
+    DEP["3x3 depth median<br/>joint Z"]
+    XYZ["Pinhole deprojection<br/>joint X, Y, Z"]
+    OUT["SkeletonFrame3D<br/>/skeleton_detection/frame"]
+    DBG["SkeletonFrame + overlay<br/>debug_frame, visualization_image"]
 
-    RS --> CAP
-    CAP -->|"BGR frame, by reference"| RTMO
-    CAP -.->|"aligned Z16 depth + colour intrinsics"| DEPTH
-    RTMO --> DET
-    DET --> TRK
-    OCC -.->|"NORMAL / OCCLUDED<br/>gates the Kalman + ReID update"| TRK
-    TRK --> IDS
-    IDS --> DEPTH
-    DEPTH --> MSG
-    MSG --> TOPIC
-    MSG --> VIZ
-    VIZ --> VTOPIC
-    MSG -.-> STATS
-
-    classDef optional stroke-dasharray: 5 5
-    class OCC,VIZ,VTOPIC optional
+    IN --> RTMO --> FLT --> TRK --> GATE --> DEP --> XYZ --> OUT
+    XYZ --> DBG
 ```
 
-The solid path is the per-frame execution order, and it is **strictly
-sequential**: RTMO, then tracking, then depth/XYZ, then the message. Tracking
-runs before the message is built so `person_id` is already the persistent track
-ID at publication time; depth runs after tracking and before the message so
-`person_id` and `position` describe the same detection.
+RTMO and tracking run once per frame; all outputs reuse that result.
 
-`person_id >= 0` is always a persistent tracker ID; `person_id == -1` means the
-detection has no persistent identity right now (a new track not yet confirmed,
-an unmatched detection, or tracking off). Such people are still published with
-their skeleton, bbox and position. With `enable_tracking: false` the tracking
-stage is skipped entirely and every `person_id` is `-1`. Occlusion-aware tracking is an
-**optional extension of the tracking stage**, not a separate path — it is off
-by default and requires tracking to be on.
+- **RTMO-M.** One bottom-up network pass returns, per person, a score $`s`$,
+  a box, and 17 COCO joints with pixel position $`(u_i, v_i)`$ and confidence
+  $`c_i`$. No separate person detector.
+- **Person filter.** Detections with $`s < 0.3`$ (`person_score_threshold`)
+  are dropped before tracking and never published.
+- **BoT-SORT + ReID.** A Kalman filter predicts each track's box; tracks and
+  detections are matched by the cheaper of IoU distance and OSNet appearance
+  distance, solved as an assignment problem:
 
-## Repository structure
+$$
+  \begin{aligned}
+  d_{\mathrm{IoU}} &= 1 - \mathrm{IoU} \\
+  \tilde{d}_{\mathrm{emb}} &=
+  \begin{cases}
+  1, & d_{\mathrm{emb}} > 0.25 \text{ or } d_{\mathrm{IoU}} > 0.7 \\
+  d_{\mathrm{emb}}, & \text{otherwise}
+  \end{cases} \\
+  c &= \min(d_{\mathrm{IoU}}, \tilde{d}_{\mathrm{emb}})
+  \end{aligned}
+$$
 
-```text
-skeleton_detection/
-├── iot_node.py          ROS 2 orchestration node
-├── input/               frame sources (camera, test images)
-├── inference/           RTMO, tracking, occlusion, depth/XYZ
-├── output/              ROS messages and visualization
-└── utils/               shared statistics and constants
+  ReID features are extracted every second frame and smoothed per track as
+  $`f \leftarrow \mathrm{normalize}(0.9 f + 0.1 f_{\mathrm{new}})`$. A lost
+  track survives $`\lfloor 55/30 \cdot 90 \rfloor = 165`$ processed frames.
+  Only tracked persons ($`\texttt{person\_id} \ge 0`$) reach the official topic.
+- **Joint gate.** Only joints with $`c_i \ge 0.30`$
+  (`depth_keypoint_score_threshold`) read depth; the others get NaN XYZ but
+  keep their confidence.
+- **Depth.** The 3×3 aligned-depth patch around the rounded joint pixel is
+  scaled to meters, invalid samples (0, NaN, ±inf) are removed, and the
+  median of the rest is the joint's Z:
+
+$$
+  Z_i = \mathrm{median}\left\lbrace z \in P_{3\times3}(u_i, v_i) \mid z > 0,\; z \text{ is finite} \right\rbrace
+$$
+
+- **Deprojection.** The joint's own pixel is lifted into the camera optical
+  frame (X right, Y down, Z forward, meters) with the colour intrinsics:
+
+$$
+  X_i = \frac{(u_i - c_x)\,Z_i}{f_x},
+  \qquad
+  Y_i = \frac{(v_i - c_y)\,Z_i}{f_y}
+$$
+
+  and packed as `joints_xyzc[4i : 4i+4] = [X_i, Y_i, Z_i, c_i]` for COCO
+  joint $`i = 0..16`$ (68 floats per person).
+
+## Launch
+
+```bash
+docker compose up
 ```
 
-| Group | Responsibility |
-|---|---|
-| `iot_node.py` | the only runtime orchestration: parameters, publishers, threads, lifecycle |
-| `input/` | produces frames — the live RealSense camera or offline test images |
-| `inference/` | everything that turns a frame into tracked, localized people |
-| `output/` | turns internal detections into ROS messages and rendered overlays |
-| `utils/` | shared, dependency-free helpers used across the pipeline |
-
-Supporting directories: `config/` (YAML parameter files), `launch/` (ROS 2
-launch files), `models/rtmo/` (the git-tracked
-RTMO config), `docker/` (Dockerfile and build helpers), `test/` (pytest suite).
-The message definitions live in the separate `patrolknight_msgs` package.
+Start the camera separately through the IoT stack so it publishes /camera/camera/rgbd.
 
 ## Documentation
 
-- [Setup](docs/setup.md) — prerequisites, host and hardware expectations,
-  repository setup
-- [Docker & Compose](docs/docker.md) — image build, the Compose workflow, GPU
-  and device access, when a rebuild is needed
-- [Running the pipeline](docs/running.md) — launch commands,
-  visualization, topic inspection, message fields
-- [Launch arguments](docs/launch_arguments.md) — the single `config:=`
-  argument and how to select or edit a parameter file
-- [Parameters](docs/parameters.md) — the complete parameter reference
-- [Architecture](docs/architecture.md) — module responsibilities, data flow,
-  execution order, algorithms
-- [Debugging](docs/debugging.md) — camera, Docker, X11, DDS, performance,
-  tracking and build troubleshooting
-- [Implementation notes](docs/implementation.md) — model assets, dependency
-  workarounds, data structures, coordinate conventions
-- [Package audit](docker/PACKAGES.md) — the pinned dependency stack and why
-  each version is what it is
-
-## Quick start
-
-```bash
-docker compose build
-docker compose up -d
-```
-
-The image contains both built packages; `up` starts the pipeline with
-`config/skeleton_detection_node.yaml` (external RealSense RGBD topic, tracking +
-ReID + occlusion-aware tracking + visualization), mounted read-only into the
-container. Edit that file and restart the container to change parameters --
-no rebuild, and no parameter values on the command line.
-
-See [docs/docker.md](docs/docker.md) and [docs/running.md](docs/running.md) for
-the full workflow.
+- [Skeleton Detection V2.1](docs/Skeleton_Detection_V2.1.md): current
+  pipeline, message layout, build and launch details, troubleshooting,
+  validation
+- [Skeleton Detection V2.0](docs/Skeleton_Detection_V2.0.md): baseline
+  pipeline and operations reference

@@ -1,7 +1,12 @@
-"""ROS 2 node running the skeleton pipeline in one process.
+"""ROS 2 node running the skeleton pipeline in one process (V2.1).
 
-    frame -> RTMO -> BoT-SORT (optional) -> per-person XYZ -> SkeletonFrame
-          -> optional visualization image
+    frame -> RTMO -> BoT-SORT (optional) -> per-joint depth (once; depth_estimation.DEPTH_SAMPLING_METHOD)
+          -> SkeletonFrame3D    on output_topic        (official)
+          -> SkeletonFrame      on debug_output_topic  (legacy debug, optional)
+          -> visualization image                        (optional, rate limited)
+
+All three outputs are built from the same detections of one RTMO/tracking
+pass, and carry the input frame's header.
 
 ``input_mode`` picks the frame source: ``realsense`` (camera opened here),
 ``ros_camera`` (RGBD topic of an external realsense2_camera driver) or
@@ -32,14 +37,20 @@ from rclpy.qos import (
 from sensor_msgs.msg import Image
 from std_msgs.msg import Header
 
-from patrolknight_msgs.msg import SkeletonFrame
+from patrolknight_msgs.msg import SkeletonFrame, SkeletonFrame3D
 
-from .output.message_builder import build_skeleton_frame, person_id_semantics
+from .output.message_builder import (
+    build_skeleton_frame,
+    build_skeleton_frame_3d,
+    person_id_semantics,
+)
 from .inference.depth_estimation import (
     NO_POSITION,
     CameraIntrinsics,
+    DEPTH_SAMPLING_METHOD,
     DepthParams,
-    compute_person_position,
+    compute_person_joint_depths,
+    person_position_from_joint_z,
 )
 from .utils.pipeline_stats import PipelineStats
 from .input.realsense_capture import RealSenseCapture, RealSenseCaptureError
@@ -90,7 +101,8 @@ class RTMONode(Node):
 
         self.bridge = CvBridge()
         self.frame_index = 0
-        self.stats = PipelineStats()
+        # Window data feeds only the periodic stats log; skip it when that is off.
+        self.stats = PipelineStats(window_enabled=self.stats_log_period_sec > 0)
         self.capture: Optional[RealSenseCapture] = None
         self._rgbd_configured = False
         self.camera_intrinsics: Optional[CameraIntrinsics] = None
@@ -128,6 +140,8 @@ class RTMONode(Node):
         self.declare_parameter("camera_frame_id", "camera_color_optical_frame")
         # --- outputs ---
         self.declare_parameter("output_topic", "/skeleton_detection/frame")
+        self.declare_parameter("publish_debug_frame", True)
+        self.declare_parameter("debug_output_topic", "/skeleton_detection/debug_frame")
         # --- model ---
         self.declare_parameter("model_config", DEFAULT_MODEL_CONFIG)
         self.declare_parameter("checkpoint", DEFAULT_CHECKPOINT)
@@ -178,7 +192,8 @@ class RTMONode(Node):
         self.declare_parameter("visualization_output_dir", DEFAULT_VISUALIZATION_DIR)
         self.declare_parameter("visualization_image_format", "jpg")
         # --- logging ---
-        self.declare_parameter("stats_log_period_sec", 1.0)
+        # <= 0 disables the periodic stats line
+        self.declare_parameter("stats_log_period_sec", 60.0)
         self.declare_parameter("log_every_frame", False)
         self.declare_parameter("run_duration_sec", 0.0)
 
@@ -197,6 +212,8 @@ class RTMONode(Node):
         self.input_topic = str(value("input_topic"))
         self.rgbd_topic = str(value("rgbd_topic"))
         self.output_topic = str(value("output_topic"))
+        self.publish_debug_frame = bool(value("publish_debug_frame"))
+        self.debug_output_topic = str(value("debug_output_topic"))
         self.camera_frame_id = str(value("camera_frame_id"))
         self.model_config = str(value("model_config"))
         self.checkpoint = str(value("checkpoint"))
@@ -329,8 +346,13 @@ class RTMONode(Node):
 
     def _create_publishers(self) -> None:
         self.frame_publisher = self.create_publisher(
-            SkeletonFrame, self.output_topic, 10
+            SkeletonFrame3D, self.output_topic, 10
         )
+        self.debug_frame_publisher = None
+        if self.publish_debug_frame:
+            self.debug_frame_publisher = self.create_publisher(
+                SkeletonFrame, self.debug_output_topic, 10
+            )
 
         # Depth 1 so a slow viewer can't pile up stale frames.
         self.visualization_publisher = None
@@ -388,8 +410,8 @@ class RTMONode(Node):
             self.get_logger().debug(
                 "Depth ENABLED: z16 aligned to colour in RealSenseCapture, "
                 f"depth_scale={self.capture.depth_scale:.6f} m/unit; "
-                "person Z = median of per-joint 3x3 Z medians over "
-                "keypoints with score >= "
+                f"person Z = median of per-joint Z ({DEPTH_SAMPLING_METHOD}) "
+                "over keypoints with score >= "
                 f"{self.depth_params.keypoint_score_threshold:.2f}"
                 + (
                     f", clamped to [{self.depth_params.min_depth_m or 0:.2f}, "
@@ -489,7 +511,7 @@ class RTMONode(Node):
             f"Depth ENABLED: '{depth_msg.encoding}' already aligned to colour "
             f"by the external driver, depth_scale={depth_scale:.6f} m/unit "
             "(no rs.align in this process); person Z = median of per-joint "
-            "3x3 Z medians over keypoints with score >= "
+            f"Z ({DEPTH_SAMPLING_METHOD}) over keypoints with score >= "
             f"{self.depth_params.keypoint_score_threshold:.2f}"
         )
 
@@ -530,7 +552,10 @@ class RTMONode(Node):
             self.get_logger().error(f"Frame processing failed: {exc}")
 
     def _log_configuration(self) -> None:
-        output = f"Output: {self.output_topic}"
+        self.get_logger().info(f"Joint depth sampling: {DEPTH_SAMPLING_METHOD}")
+        output = f"Output: {self.output_topic} (SkeletonFrame3D)"
+        if self.debug_frame_publisher is not None:
+            output += f", debug {self.debug_output_topic} (SkeletonFrame)"
         if self.visualization_publisher is not None:
             rate = (
                 f"{self.visualization_fps:.1f} Hz"
@@ -619,12 +644,11 @@ class RTMONode(Node):
         header: Header,
         depth_image: Optional[np.ndarray] = None,
     ) -> None:
-        """RTMO -> tracking -> depth -> publish -> visualization.
+        """RTMO -> tracking -> joint depth -> 3D/debug publish -> visualization.
 
-        ``depth_image`` is raw depth aligned to colour, or ``None``.
+        ``depth_image`` is raw depth aligned to colour, or ``None``. RTMO and
+        tracking run once; every output is built from that one result.
         """
-        total_start = time.perf_counter()
-
         start = time.perf_counter()
         detections: List[PersonDetection] = self.inference.infer(frame_bgr)
         inference_ms = (time.perf_counter() - start) * 1000.0
@@ -642,18 +666,23 @@ class RTMONode(Node):
             tracking_ms = (time.perf_counter() - start) * 1000.0
             active_tracks = self.tracker.active_tracks
 
-        self._attach_person_position(detections, depth_image)
+        joints_xyzc = self._attach_joint_depths(detections, depth_image)
 
+        frame_3d = build_skeleton_frame_3d(
+            header, self.frame_index, detections, joints_xyzc
+        )
+        self.frame_publisher.publish(frame_3d)
+
+        # Legacy message: debug topic and the 2D overlay both read it.
         frame_msg = build_skeleton_frame(header, self.frame_index, detections)
-        self.frame_publisher.publish(frame_msg)
+        if self.debug_frame_publisher is not None:
+            self.debug_frame_publisher.publish(frame_msg)
 
         self._handle_visualization(frame_bgr, frame_msg.persons, header)
 
-        total_ms = (time.perf_counter() - total_start) * 1000.0
         self.stats.record_frame(
             inference_ms=inference_ms,
             tracking_ms=tracking_ms,
-            total_ms=total_ms,
             person_count=len(frame_msg.persons),
             active_tracks=active_tracks,
         )
@@ -673,24 +702,35 @@ class RTMONode(Node):
             )
         self.frame_index += 1
 
-    def _attach_person_position(
+    def _attach_joint_depths(
         self, detections: List[PersonDetection], depth_image: Optional[np.ndarray]
-    ) -> None:
-        """Fill ``detection.position`` [m, colour optical frame]; NaN without depth."""
-        if depth_image is None or self.camera_intrinsics is None:
-            for detection in detections:
-                detection.position = NO_POSITION
-            return
+    ) -> List[np.ndarray]:
+        """Sample each gated joint's depth once; return per-detection joints_xyzc.
 
+        Also fills the legacy ``detection.position`` [m, colour optical frame]
+        from the same joint Z values, so no depth patch is sampled twice.
+        """
+        packed: List[np.ndarray] = []
         for detection in detections:
-            detection.position = compute_person_position(
+            # DEPTH_SAMPLING_METHOD (depth_estimation.py): "person_cluster"
+            # (method D) or "median" (the original 3x3 baseline). The 3D frame,
+            # the legacy position and the overlay all use this one result.
+            joint_z, joints_xyzc = compute_person_joint_depths(
                 depth_image,
                 detection.keypoints_xy,
                 detection.keypoint_scores,
-                detection.bbox_xyxy,
                 self.camera_intrinsics,
                 self.depth_params,
             )
+            detection.position = (
+                NO_POSITION
+                if depth_image is None
+                else person_position_from_joint_z(
+                    joint_z, detection.bbox_xyxy, self.camera_intrinsics
+                )
+            )
+            packed.append(joints_xyzc)
+        return packed
 
     def _handle_visualization(
         self, frame_bgr: np.ndarray, persons, header: Header
@@ -786,15 +826,6 @@ class RTMONode(Node):
             self._emit("No frames were processed")
             return
 
-        def series(name: str, data) -> List[str]:
-            if not data:
-                return []
-            return [
-                f"  {name:<17} : mean {data['mean']:.2f} ms | median "
-                f"{data['median']:.2f} | p95 {data['p95']:.2f} | "
-                f"min/max {data['min']:.2f}/{data['max']:.2f}"
-            ]
-
         source = {
             INPUT_MODE_ROS_TOPIC: self.input_topic,
             INPUT_MODE_ROS_CAMERA: self.rgbd_topic,
@@ -818,9 +849,6 @@ class RTMONode(Node):
             "(CUDA warm-up)",
             f"  persons/frame     : {summary['mean_persons']:.2f} mean",
         ]
-        lines += series("rtmo_inference_ms", summary["inference"])
-        lines += series("tracking_ms", summary["tracking"])
-        lines += series("total_ms", summary["total"])
         if self.tracker is not None:
             lines.append(
                 f"  mean active tracks: {summary['mean_active_tracks']:.2f}"

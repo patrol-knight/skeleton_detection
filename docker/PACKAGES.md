@@ -8,10 +8,10 @@ these exact versions**. It is the reference to read before changing a pin in
 
 It deliberately does **not** describe how the subsystem works. For that, see:
 
-- [`../docs/architecture.md`](../docs/architecture.md) — module
-  responsibilities, data flow, execution order
-- [`../docs/implementation.md`](../docs/implementation.md) — model assets,
-  coordinate conventions, internal data structures
+- [`../docs/Skeleton_Detection_V2.0.md`](../docs/Skeleton_Detection_V2.0.md) — data
+  flow, execution order, model assets, coordinate conventions
+- [`../docs/Skeleton_Detection_V2.1.md`](../docs/Skeleton_Detection_V2.1.md) — the
+  current per-joint 3D output
 
 Every version below was read from the current [`Dockerfile`](Dockerfile),
 [`fetch_models.py`](fetch_models.py), [`verify_image.py`](verify_image.py),
@@ -99,7 +99,7 @@ they are hard apt dependencies of `cv_bridge`.
 
 No GUI tools (rqt) are installed: the image is headless. View
 `/skeleton_detection/visualization_image` from a separate viewer container,
-e.g. the IoT stack's `diagnose` service (see [docs/docker.md](../docs/docker.md#gui-tools-rqt--opt-in)).
+e.g. the IoT stack's `tools` service (see [Viewing the overlay](../docs/Skeleton_Detection_V2.0.md#65-viewing-the-overlay)).
 
 ### `package.xml` → where each dependency comes from
 
@@ -119,7 +119,8 @@ e.g. the IoT stack's `diagnose` service (see [docs/docker.md](../docs/docker.md#
 
 ## patrolknight_msgs and this package
 
-`patrolknight_msgs` defines `SkeletonFrame` and `PersonSkeleton`, the node's
+`patrolknight_msgs` defines `SkeletonFrame3D` / `PersonSkeleton3D` (official
+output) and `SkeletonFrame` / `PersonSkeleton` (legacy debug output), the node's
 output messages (imported by `iot_node.py` and `output/message_builder.py`).
 It is **not** an apt package; it lives in its own repository and is built from
 source at image build time into its own install space:
@@ -313,7 +314,7 @@ python3 -m pip install --no-cache-dir -c /etc/pip-constraints.txt "boxmot==19.0.
 
 Used by `inference/person_tracking.py` for person tracking, and extended by
 `inference/occlusion_tracking.py`. See
-[`../docs/architecture.md`](../docs/architecture.md) for what the tracking
+[Tracking](../docs/Skeleton_Detection_V2.0.md#3-tracking) for what the tracking
 stage does.
 
 ### The version pin is load-bearing
@@ -449,7 +450,8 @@ needed.
 **Device access:** the wheel uses the V4L2 backend, so the camera's
 `/dev/video*` and `/dev/media*` nodes are enough (verified 2026-09-30); no
 `privileged` and no `/dev/bus/usb` are needed. The default compose grants
-none of this — direct mode is opt-in, see `docs/docker.md`. **No udev rules
+none of this — direct mode is opt-in, see
+[Running recipes](../docs/Skeleton_Detection_V2.0.md#64-running-recipes). **No udev rules
 are installed inside the container.**
 
 **Verified device** (2026-09-07): RealSense D456, serial `308222301472`,
@@ -649,7 +651,7 @@ plugin imports `_pytest.scope`, which exists only in pytest 7+, so bare
 `pytest` dies at start-up with `ModuleNotFoundError: No module named
 '_pytest.scope'`. Run the suite with `-p no:anyio` (or
 `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1`). This is a packaging mismatch in the image,
-not a test failure — see [`../docs/debugging.md`](../docs/debugging.md).
+not a test failure — see [Tests](../docs/Skeleton_Detection_V2.0.md#68-tests).
 
 ---
 

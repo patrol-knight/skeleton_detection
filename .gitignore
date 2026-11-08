@@ -33,3 +33,6 @@ __pycache__/
 *.engine
 *.trt
 *.safetensors
+/recordings/
+# Local experiment runs (bags, JSONL exports, figures); one subdirectory per run.
+/experiments/

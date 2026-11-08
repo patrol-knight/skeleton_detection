@@ -14,7 +14,8 @@ Needs a sourced ROS 2 workspace with ``patrolknight_msgs`` and ``cv_bridge``
 Coverage:
 
     1  SkeletonFrame has no separate ``timestamp`` field
-    2  ros_camera: the RGB image stamp reaches the published header.stamp
+    2  ros_camera: the RGB image stamp reaches header.stamp of BOTH the
+       official SkeletonFrame3D and the legacy debug SkeletonFrame
     3  the same for an empty frame (zero detections), which is still published
     4  header.frame_id is the driver's; camera_frame_id is only a fallback
        for an empty one, and frame_index counts published frames
@@ -42,10 +43,13 @@ pytest.importorskip("patrolknight_msgs.msg")
 
 from builtin_interfaces.msg import Time  # noqa: E402
 from cv_bridge import CvBridge  # noqa: E402
-from patrolknight_msgs.msg import SkeletonFrame  # noqa: E402
+from patrolknight_msgs.msg import SkeletonFrame, SkeletonFrame3D  # noqa: E402
 from std_msgs.msg import Header  # noqa: E402
 
-from skeleton_detection.inference.depth_estimation import CameraPoint  # noqa: E402
+from skeleton_detection.inference.depth_estimation import (  # noqa: E402
+    CameraPoint,
+    DepthParams,
+)
 from skeleton_detection.inference.rtmo_inference import PersonDetection  # noqa: E402
 from skeleton_detection.iot_node import RTMONode  # noqa: E402
 from skeleton_detection.output.message_builder import (  # noqa: E402
@@ -96,16 +100,18 @@ class HarnessNode:
 
     _on_rgbd = RTMONode._on_rgbd
     _process_frame = RTMONode._process_frame
-    _attach_person_position = RTMONode._attach_person_position
+    _attach_joint_depths = RTMONode._attach_joint_depths
 
     def __init__(self, detections):
         self.bridge = CvBridge()
         self.camera_frame_id = "camera_color_optical_frame"
         self._rgbd_configured = True
         self.camera_intrinsics = None
+        self.depth_params = DepthParams()
         self.inference = StubInference(detections)
         self.tracker = None
         self.frame_publisher = RecordingPublisher()
+        self.debug_frame_publisher = RecordingPublisher()
         self.stats = StubStats()
         self.log_every_frame = False
         self.frame_index = 0
@@ -147,6 +153,7 @@ def make_detection():
         keypoints_xy=np.full((17, 2), 20.0, dtype=np.float32),
         keypoint_scores=np.full(17, 0.8, dtype=np.float32),
         detection_index=0,
+        track_id=3,
     )
 
 
@@ -154,7 +161,8 @@ def run_one_frame(detections, frame_id="camera_color_optical_frame"):
     node = HarnessNode(detections)
     node._on_rgbd(make_rgbd(frame_id))
     assert len(node.frame_publisher.messages) == 1
-    return node.frame_publisher.messages[0]
+    assert len(node.debug_frame_publisher.messages) == 1
+    return node.frame_publisher.messages[0], node.debug_frame_publisher.messages[0]
 
 
 # ----------------------------------------------------------------------
@@ -170,37 +178,39 @@ def test_skeleton_frame_has_no_timestamp_field():
 # 2 - ros_camera source stamp is preserved
 # ----------------------------------------------------------------------
 def test_ros_camera_stamp_reaches_published_frame():
-    frame = run_one_frame([make_detection()])
+    official, debug = run_one_frame([make_detection()])
 
-    assert isinstance(frame, SkeletonFrame)
-    assert len(frame.persons) == 1
-    assert frame.header.stamp.sec == SOURCE_STAMP.sec
-    assert frame.header.stamp.nanosec == SOURCE_STAMP.nanosec
-    assert frame.header.frame_id == "camera_color_optical_frame"
+    assert isinstance(official, SkeletonFrame3D)
+    assert isinstance(debug, SkeletonFrame)
+    for frame in (official, debug):
+        assert len(frame.persons) == 1
+        assert frame.header.stamp.sec == SOURCE_STAMP.sec
+        assert frame.header.stamp.nanosec == SOURCE_STAMP.nanosec
+        assert frame.header.frame_id == "camera_color_optical_frame"
+        assert frame.frame_index == 0
 
 
 # ----------------------------------------------------------------------
 # 3 - empty frames carry the same source stamp
 # ----------------------------------------------------------------------
 def test_empty_frame_is_published_with_source_stamp():
-    frame = run_one_frame([])
-
-    assert len(frame.persons) == 0
-    assert frame.header.stamp.sec == SOURCE_STAMP.sec
-    assert frame.header.stamp.nanosec == SOURCE_STAMP.nanosec
+    for frame in run_one_frame([]):
+        assert len(frame.persons) == 0
+        assert frame.header.stamp.sec == SOURCE_STAMP.sec
+        assert frame.header.stamp.nanosec == SOURCE_STAMP.nanosec
 
 
 # ----------------------------------------------------------------------
 # 4 - frame_id and frame_index
 # ----------------------------------------------------------------------
 def test_driver_frame_id_is_kept():
-    frame = run_one_frame([], frame_id="some_other_optical_frame")
-    assert frame.header.frame_id == "some_other_optical_frame"
+    for frame in run_one_frame([], frame_id="some_other_optical_frame"):
+        assert frame.header.frame_id == "some_other_optical_frame"
 
 
 def test_empty_driver_frame_id_falls_back_to_camera_frame_id():
-    frame = run_one_frame([], frame_id="")
-    assert frame.header.frame_id == HarnessNode([]).camera_frame_id
+    for frame in run_one_frame([], frame_id=""):
+        assert frame.header.frame_id == HarnessNode([]).camera_frame_id
 
 
 def test_frame_index_counts_published_frames():
@@ -208,6 +218,7 @@ def test_frame_index_counts_published_frames():
     node._on_rgbd(make_rgbd())
     node._on_rgbd(make_rgbd())
     assert [m.frame_index for m in node.frame_publisher.messages] == [0, 1]
+    assert [m.frame_index for m in node.debug_frame_publisher.messages] == [0, 1]
 
 
 # ----------------------------------------------------------------------
