@@ -82,7 +82,7 @@ import numpy as np
 
 # --- Per-joint depth sampling method (see compute_person_joint_depths) -------
 # "median" restores the existing baseline.
-DEPTH_SAMPLING_METHOD = "median"
+DEPTH_SAMPLING_METHOD = "person_cluster"
 
 # Method D patch, separate from the baseline 3x3 (DepthParams.window).
 DEPTH_PATCH_SIZE = 7
